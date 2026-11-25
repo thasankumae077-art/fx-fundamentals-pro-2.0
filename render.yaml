@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: fx-fundamentals-pro
+    runtime: node
+    rootDir: backend
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://your-web-app.example.com
