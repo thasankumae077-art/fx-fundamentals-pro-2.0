@@ -640,130 +640,342 @@ async function fundamentals(){
   return{data,missing,errors:{detail:[...new Set(diag)]},sources:'ECB, BoE, BoC, ONS, Eurostat, BIS, FRED (OECD/BLS series). Each value shows its own source and date.'};
 }
 
-// ---- Economic calendar: TradingEconomics primary + FRED release calendar fallback
-const MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
-const TE_COUNTRIES=['united states','euro area','germany','united kingdom','japan','switzerland','canada','australia','new zealand'];
-const TE_CUR={
-  'united states':'USD',
-  'euro area':'EUR',
-  'germany':'EUR',
-  'united kingdom':'GBP',
-  'japan':'JPY',
-  'switzerland':'CHF',
-  'canada':'CAD',
-  'australia':'AUD',
-  'new zealand':'NZD'
+
+// ---- Economic Calendar: ShowMyTrades primary + biquote fallback
+// Public APIs; no API key required.
+// Normalized response preserves the existing frontend contract.
+
+const MAJ = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD'];
+
+const CALENDAR_COUNTRIES = {
+  USD: 'US',
+  EUR: 'EU',
+  GBP: 'GB',
+  JPY: 'JP',
+  CHF: 'CH',
+  CAD: 'CA',
+  AUD: 'AU',
+  NZD: 'NZ'
 };
 
-const lowerBetter=/unemployment|jobless|claims|initial claims|continuing claims|deficit|debt|inventor(y|ies)|crude stocks|crude oil stocks|失業率/i;
-
-function calendarBetter(title,actual,forecast){
-  const a=Number(String(actual??'').replace(/,/g,'').replace(/%|K|M|B/gi,'')),
-    f=Number(String(forecast??'').replace(/,/g,'').replace(/%|K|M|B/gi,''));
-  if(actual==null||forecast==null||actual===''||forecast===''||!Number.isFinite(a)||!Number.isFinite(f)||a===f)return null;
-  return lowerBetter.test(title)?a<f:a>f;
-}
-
-const teImpact=v=>{
-  const n=Number(v);
-  return n>=3?'High':n===2?'Medium':n===1?'Low':/high/i.test(String(v))?'High':/medium/i.test(String(v))?'Medium':'Low';
+const COUNTRY_CURRENCY = {
+  US: 'USD',
+  EU: 'EUR',
+  GB: 'GBP',
+  JP: 'JPY',
+  CH: 'CHF',
+  CA: 'CAD',
+  AU: 'AUD',
+  NZ: 'NZD'
 };
 
-const calDate=d=>d.toISOString().slice(0,10);
+const lowerBetter =
+  /unemployment|jobless|claims|initial claims|continuing claims|deficit|debt|inventor(y|ies)|crude stocks|crude oil stocks/i;
 
-async function tradingEconomicsCalendar(){
-  const now=new Date(),mon=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),now.getUTCDate()));
-  const day=mon.getUTCDay(),monday=new Date(mon.getTime()-((day+6)%7)*864e5),
-    d1=calDate(new Date(monday.getTime()-7*864e5)),
-    d2=calDate(new Date(monday.getTime()+13*864e5));
+function calendarNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
 
-  const url='https://api.tradingeconomics.com/calendar?c=guest:guest&country='+encodeURIComponent(TE_COUNTRIES.join(','))+'&d1='+d1+'&d2='+d2+'&f=json';
-  const raw=JSON.parse(await getText(url,{headers:{'Accept':'application/json'}},2));
-  if(!Array.isArray(raw))throw new Error('TradingEconomics returned an unexpected calendar payload');
+  const str = String(value).replace(/,/g, '').trim();
+  const match = str.match(/^(-?\d+(?:\.\d+)?)\s*([KMB])?%?$/i);
 
-  const items=raw.map((e,i)=>{
-    const country=String(e.Country||e.country||'').toLowerCase(),
-      currency=TE_CUR[country]||e.Currency||e.currency,
-      title=e.Event||e.Category||e.event||e.category||'Economic release',
-      dt=e.Date||e.date||e.CalendarDate,
-      parsed=new Date(dt);
+  if (!match) return null;
 
-    if(!MAJ.includes(currency)||isNaN(parsed))return null;
+  const multipliers = {
+    K: 1e3,
+    M: 1e6,
+    B: 1e9
+  };
 
-    return{
-      id:String(e.CalendarId||e.ID||e.id||crypto.createHash('md5').update(currency+title+parsed.toISOString()).digest('hex').slice(0,16)),
-      title,
-      currency,
-      impact:teImpact(e.Importance??e.importance),
-      timestamp:parsed.toISOString(),
-      actual:e.Actual??e.actual??null,
-      forecast:e.Forecast??e.forecast??null,
-      previous:e.Previous??e.previous??null,
-      better:calendarBetter(title,e.Actual??e.actual,e.Forecast??e.forecast)
-    };
-  }).filter(Boolean).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
-
-  if(!items.length)throw new Error('TradingEconomics returned no supported events');
-  return{items,source:'TradingEconomics public economic calendar',window:{from:d1,to:d2}};
+  return Number(match[1]) * (multipliers[(match[2] || '').toUpperCase()] || 1);
 }
 
-// FRED's public release calendar is used when the primary calendar cannot be reached.
-async function fredCalendarFallback(){
-  const html=await getText('https://fred.stlouisfed.org/releases/calendar',{},2);
-  const rows=[...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)].map(m=>m[1]),items=[];
+function calendarBetter(title, actual, forecast) {
+  const a = calendarNumber(actual);
+  const f = calendarNumber(forecast);
 
-  for(const row of rows){
-    const title=(row.match(/<a[^>]*href="\/releases\/id\/[^"]+"[^>]*>([\s\S]*?)<\/a>/i)||row.match(/<a[^>]*>([\s\S]*?)<\/a>/i)||[])[1];
-    if(!title)continue;
+  if (a === null || f === null || a === f) return null;
 
-    const clean=s=>String(s||'').replace(/<[^>]+>/g,' ').replace(/&amp;/g,'&').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim(),
-      txt=clean(row),
-      name=clean(title),
-      date=(txt.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b/i)||[])[0],
-      time=(txt.match(/\b\d{1,2}:\d{2}\s*(?:AM|PM)\b/i)||[])[0]||'08:30 AM';
+  return lowerBetter.test(title) ? a < f : a > f;
+}
 
-    if(!date)continue;
+function calendarImpact(value) {
+  const v = String(value || '').toLowerCase();
 
-    const dt=new Date(`${date} ${time} UTC`);
-    if(isNaN(dt))continue;
+  if (['high', '3', '3.0'].includes(v)) return 'High';
+  if (['medium', '2', '2.0'].includes(v)) return 'Medium';
 
-    const high=/employment|consumer price|CPI|GDP|FOMC|interest rate|PCE/i.test(name),
-      medium=/retail|producer price|PPI|trade|housing|industrial production/i.test(name);
+  return 'Low';
+}
 
-    items.push({
-      id:crypto.createHash('md5').update('USD'+name+dt.toISOString()).digest('hex').slice(0,16),
-      title:name,
-      currency:'USD',
-      impact:high?'High':medium?'Medium':'Low',
-      timestamp:dt.toISOString(),
-      actual:null,
-      forecast:null,
-      previous:null,
-      better:null
-    });
+function calendarDate(value) {
+  const d = new Date(value);
+
+  if (Number.isNaN(d.getTime())) return null;
+
+  return d.toISOString();
+}
+
+function normalizeCalendarEvent(event, provider) {
+  const currency = String(
+    event.currency ||
+    event.Currency ||
+    COUNTRY_CURRENCY[String(
+      event.countryCode || event.CountryCode || ''
+    ).toUpperCase()] ||
+    ''
+  ).toUpperCase();
+
+  if (!MAJ.includes(currency)) return null;
+
+  const title = String(
+    event.title ||
+    event.name ||
+    event.Event ||
+    event.Category ||
+    'Economic release'
+  ).trim();
+
+  if (!title) return null;
+
+  const timestamp = calendarDate(
+    event.time ||
+    event.timestamp ||
+    event.Date ||
+    event.date
+  );
+
+  if (!timestamp) return null;
+
+  const actual = event.actual ?? event.Actual ?? null;
+  const forecast = event.forecast ?? event.Forecast ?? null;
+  const previous = event.previous ?? event.Previous ?? null;
+
+  const impact = calendarImpact(
+    event.impact ??
+    event.importance ??
+    event.Importance
+  );
+
+  const id = String(
+    event.id ||
+    event.CalendarId ||
+    crypto.createHash('md5')
+      .update(currency + title + timestamp)
+      .digest('hex')
+      .slice(0, 16)
+  );
+
+  return {
+    id,
+    title,
+    currency,
+    impact,
+    timestamp,
+    actual: actual === null ? null : String(actual),
+    forecast: forecast === null ? null : String(forecast),
+    previous: previous === null ? null : String(previous),
+    better: calendarBetter(title, actual, forecast),
+    status: event.status || 'scheduled',
+    period: event.period || null,
+    confidence: event.confidence || null,
+    source: provider
+  };
+}
+
+// PRIMARY SOURCE
+// ShowMyTrades public economic calendar.
+// Supports all eight major FX currencies.
+// Maximum forward window: 30 days.
+// Its window also includes the previous six hours.
+
+async function showMyTradesCalendar() {
+  const url = new URL(
+    'https://showmytrades.com/api/public/calendar/v1'
+  );
+
+  url.searchParams.set('currency', MAJ.join(','));
+  url.searchParams.set('impact', 'all');
+  url.searchParams.set('days', '30');
+  url.searchParams.set('format', 'json');
+
+  const response = await fetch(url, {
+    headers: {
+      'Accept': 'application/json',
+      'User-Agent': 'FXFundamentalsPro/1.0'
+    },
+    signal: AbortSignal.timeout(12000)
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `ShowMyTrades HTTP ${response.status}`
+    );
   }
 
-  if(!items.length)throw new Error('FRED release calendar contained no parseable releases');
-  return{items,source:'FRED official release calendar fallback (USD schedule only)'};
-}
+  const data = await response.json();
 
-async function calendar(){
-  try{
-    return await tradingEconomicsCalendar();
-  }catch(primaryError){
-    try{
-      const fallback=await fredCalendarFallback();
-      return{...fallback,warning:'TradingEconomics unavailable: '+primaryError.message};
-    }catch(fallbackError){
-      return{
-        items:[],
-        source:'Calendar sources temporarily unavailable',
-        warning:`TradingEconomics: ${primaryError.message}; FRED fallback: ${fallbackError.message}`
-      };
+  if (!Array.isArray(data.events)) {
+    throw new Error(
+      'ShowMyTrades returned an invalid events array'
+    );
+  }
+
+  const items = data.events
+    .map(event =>
+      normalizeCalendarEvent(event, 'ShowMyTrades')
+    )
+    .filter(Boolean)
+    .sort((a, b) =>
+      a.timestamp.localeCompare(b.timestamp)
+    );
+
+  if (!items.length) {
+    throw new Error(
+      'ShowMyTrades returned zero supported events'
+    );
+  }
+
+  return {
+    items,
+    source: 'ShowMyTrades Economic Calendar API',
+    serverTime: data.server_time_iso || null,
+    generatedAt: data.generated_at || null,
+    attribution: data.attribution || null,
+    window: {
+      from: data.from || null,
+      to: data.to || null
     }
+  };
+}
+
+// FALLBACK SOURCE
+// Biquote public economic calendar.
+// Supports a wider range of countries.
+// No API key required.
+
+async function biquoteCalendar() {
+  const now = new Date();
+
+  const from = new Date(
+    now.getTime() - 6 * 60 * 60 * 1000
+  );
+
+  const to = new Date(
+    now.getTime() + 30 * 24 * 60 * 60 * 1000
+  );
+
+  const url = new URL(
+    'https://biquote.io/api/calendar'
+  );
+
+  url.searchParams.set(
+    'from',
+    from.toISOString()
+  );
+
+  url.searchParams.set(
+    'to',
+    to.toISOString()
+  );
+
+  url.searchParams.set(
+    'countries',
+    Object.values(CALENDAR_COUNTRIES).join(',')
+  );
+
+  url.searchParams.set('limit', '500');
+
+  const response = await fetch(url, {
+    headers: {
+      'Accept': 'application/json',
+      'User-Agent': 'FXFundamentalsPro/1.0'
+    },
+    signal: AbortSignal.timeout(12000)
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Biquote HTTP ${response.status}`
+    );
+  }
+
+  const data = await response.json();
+
+  if (!Array.isArray(data)) {
+    throw new Error(
+      'Biquote returned an invalid events array'
+    );
+  }
+
+  const items = data
+    .map(event =>
+      normalizeCalendarEvent(event, 'Biquote')
+    )
+    .filter(Boolean)
+    .sort((a, b) =>
+      a.timestamp.localeCompare(b.timestamp)
+    );
+
+  if (!items.length) {
+    throw new Error(
+      'Biquote returned zero supported events'
+    );
+  }
+
+  return {
+    items,
+    source: 'Biquote Economic Calendar API',
+    window: {
+      from: from.toISOString(),
+      to: to.toISOString()
+    }
+  };
+}
+
+// CALENDAR ROUTER
+// Primary -> fallback.
+// Never silently return an empty calendar after both sources fail.
+
+async function calendar() {
+  let primaryError = null;
+
+  try {
+    return await showMyTradesCalendar();
+
+  } catch (error) {
+    primaryError = error;
+
+    console.error(
+      '[Calendar] Primary source failed:',
+      error.message
+    );
+  }
+
+  try {
+    const fallback = await biquoteCalendar();
+
+    return {
+      ...fallback,
+      warning:
+        'Primary calendar unavailable. Using Biquote fallback. ' +
+        primaryError.message
+    };
+
+  } catch (fallbackError) {
+    console.error(
+      '[Calendar] Fallback source failed:',
+      fallbackError.message
+    );
+
+    throw new Error(
+      `All calendar sources unavailable. ` +
+      `ShowMyTrades: ${primaryError.message}; ` +
+      `Biquote: ${fallbackError.message}`
+    );
   }
 }
 
+};
 const COT_MK={EUR:'099741',GBP:'096742',JPY:'097741',CHF:'092741',CAD:'090741',AUD:'232741',NZD:'112741',USD:'098662'};
 
 async function cot(){
