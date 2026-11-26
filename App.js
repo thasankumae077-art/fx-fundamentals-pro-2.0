@@ -102,11 +102,17 @@ function Macro({d}){
     {d.stale&&<Note>Showing stale server cache.</Note>}{Object.keys(d.errors||{}).length>0&&<Note>Unavailable upstream: {Object.keys(d.errors).join(', ')}</Note>}</>;
 }
 const CATS=['Top Stories','Central Banks','Currencies','Macro & Rates'];
-const CATC={'Central Banks':['#1e3a8a','🏛️'],'Currencies':['#065f46','💱'],'Macro & Rates':['#7c2d12','📊'],'Top Stories':['#312e81','📰']};
+const AS={USD:['#15803d','$'],EUR:['#2563eb','€'],GBP:['#7e22ce','£'],JPY:['#dc2626','¥'],CHF:['#be123c','₣'],CAD:['#ea580c','C$'],AUD:['#ca8a04','A$'],NZD:['#0d9488','NZ$'],XAUUSD:['#b45309','Au'],XAGUSD:['#64748b','Ag']};
+const ASSETS=Object.keys(AS),CF={'Central Banks':['#0f766e','%'],'Currencies':['#9333ea','⇄'],'Macro & Rates':['#c2410c','↗'],'Top Stories':['#334155','◆']};
 const relT=n=>{const t=n.time?new Date(n.time):null;if(!t||isNaN(t))return n.publishedAt||'';const s=(Date.now()-t)/1e3,m=s/60,h=m/60,d=h/24,f=Math.floor;return s<60?'just now':m<60?`${f(m)} min ago`:h<24?`${f(h)} hour${f(h)>1?'s':''} ago`:d<7?`${f(d)} day${f(d)>1?'s':''} ago`:t.toLocaleDateString()};
-function Thumb({n,style,big}){const [bad,setBad]=useState(false),[bg,ic]=CATC[n.category]||CATC['Top Stories'];
-  return n.imageUrl&&!bad?<Image source={{uri:n.imageUrl}} onError={()=>setBad(true)} resizeMode='cover' style={{backgroundColor:C.line,...style}}/>
-    :<View style={{backgroundColor:bg,alignItems:'center',justifyContent:'center',...style}}><Text style={{fontSize:big?44:22}}>{ic}</Text>{big&&<T c='#ffffffaa' s={11} w='700' style={{marginTop:4}}>{(n.category||'').toUpperCase()}</T>}</View>}
+function Thumb({n,style,big}){
+  const [bad,setBad]=useState(false);
+  if(n.imageUrl&&!bad)return<Image source={{uri:n.imageUrl}} onError={()=>setBad(true)} resizeMode='cover' style={{backgroundColor:C.line,...style}}/>;
+  const a=['XAUUSD','XAGUSD',...CUR].find(c=>n.cur?.includes(c)),[bg,sym]=a?AS[a]:(CF[n.category]||CF['Top Stories']),sm=(style?.width||100)<70,h=[...(n.id||'abcdefabcdef')].slice(0,sm?6:12).map(ch=>ch.charCodeAt(0)%6);
+  return<View style={{backgroundColor:bg,overflow:'hidden',justifyContent:'center',alignItems:'center',...style}}>
+    <View style={{position:'absolute',left:0,right:0,top:0,bottom:0,flexDirection:'row',alignItems:'flex-end',paddingHorizontal:4}}>{h.map((v,i)=><View key={i} style={{flex:1,marginHorizontal:1,height:`${22+v*9}%`,backgroundColor:'rgba(255,255,255,.15)',borderTopLeftRadius:2,borderTopRightRadius:2}}/>)}</View>
+    <Text style={{color:'#fff',fontSize:big?60:sm?20:30,fontWeight:'800'}}>{sym}</Text>
+    {big&&<T c='#ffffffcc' s={12} w='800' style={{marginTop:2,letterSpacing:2}}>{a||(n.category||'').toUpperCase()}</T>}</View>}
 const Badge=({n})=><View style={{flexDirection:'row'}}><View style={{backgroundColor:C.line,borderRadius:4,paddingHorizontal:6,paddingVertical:2}}><T s={10} w='700'>{(n.source||'News').toUpperCase()}</T></View></View>;
 const Chip=({t,c})=><View style={{borderWidth:1,borderColor:c,borderRadius:14,paddingHorizontal:10,paddingVertical:4,marginRight:6,marginBottom:6}}><T c={c} s={12} w='700'>{t}</T></View>;
 function Reader({n,onClose}){
@@ -126,14 +132,14 @@ function Reader({n,onClose}){
       </ScrollView></View></View></Modal>}
 function Side({title,items,pick}){return items.length?<Card title={title}>{items.map(n=><TouchableOpacity key={n.id} onPress={()=>pick(n)}><Row style={{alignItems:'flex-start',paddingVertical:8}}><View style={{flex:1,paddingRight:10}}><T s={13} w='600'>{n.title}</T><T c={C.mut} s={10} style={{marginTop:3}}>{n.source} · {relT(n)}</T></View><Thumb n={n} style={{width:56,height:56,borderRadius:8}}/></Row></TouchableOpacity>)}</Card>:null}
 function News({news,trades}){
-  const {width}=useWindowDimensions(),wide=width>=900,[cat,setCat]=useState('Top Stories'),[sel,setSel]=useState(null);
-  const L=news.filter(n=>cat==='Top Stories'||n.category===cat),lead=L.find(n=>n.imageUrl)||L[0];
+  const {width}=useWindowDimensions(),wide=width>=900,[cat,setCat]=useState('Top Stories'),[asset,setAsset]=useState(null),[sel,setSel]=useState(null);
+  const L0=news.filter(n=>cat==='Top Stories'||n.category===cat),cnt=x=>L0.filter(n=>n.cur?.includes(x)).length,L=asset?L0.filter(n=>n.cur?.includes(asset)):L0,lead=L.find(n=>n.imageUrl)||L[0];
   const sub=lead?L.filter(n=>n.id!==lead.id&&(n.category===lead.category||n.cur?.some(c=>lead.cur?.includes(c)))).slice(0,3):[];
   const used=new Set([lead?.id,...sub.map(n=>n.id)]),rest=L.filter(n=>!used.has(n.id)).slice(0,40);
   const hi=news.filter(n=>n.impact==='HIGH'),movers=(hi.length?hi:news).slice(0,8);
-  const mine=new Set(trades.flatMap(t=>[t.pair.slice(0,3),t.pair.slice(3,6)])),picks=mine.size?news.filter(n=>n.cur?.some(c=>mine.has(c))&&!movers.includes(n)).slice(0,5):[];
+  const mine=new Set(trades.flatMap(t=>[t.pair.slice(0,3),t.pair.slice(3,6),t.pair])),picks=mine.size?news.filter(n=>n.cur?.some(c=>mine.has(c))&&!movers.includes(n)).slice(0,5):[];
   const main=<View style={{flex:1,width:'100%'}}>
-    {!lead&&<Wait/>}
+    {!lead&&(asset?<Card><T c={C.mut}>No {asset} stories in this category yet — try “Top Stories” or another asset.</T></Card>:<Wait/>)}
     {lead&&<Card style={{padding:0,overflow:'hidden'}}><TouchableOpacity activeOpacity={.85} onPress={()=>setSel(lead)}><Thumb n={lead} big style={{width:'100%',height:wide?240:180}}/>
       <View style={{padding:14}}><Badge n={lead}/><T s={22} w='800' style={{marginTop:8}}>{lead.title}</T><T c={C.mut} s={12} style={{marginTop:4}}>{relT(lead)}</T></View></TouchableOpacity>
       {sub.map(r=><TouchableOpacity key={r.id} onPress={()=>setSel(r)} style={{borderTopWidth:1,borderTopColor:C.line,paddingHorizontal:14,paddingVertical:10}}><T s={14} w='600'>{r.title}</T><T c={C.mut} s={11} style={{marginTop:2}}>{r.source} · {relT(r)}</T></TouchableOpacity>)}</Card>}
@@ -141,6 +147,12 @@ function News({news,trades}){
   const side=<View style={{width:wide?320:'100%',marginLeft:wide?20:0,marginTop:wide?0:12}}><Side title='Market movers' items={movers} pick={setSel}/><Side title='Picks for you · from your journal pairs' items={picks} pick={setSel}/></View>;
   return<><T s={24} w='800'>News</T><Note>Google News searches, FXStreet, CNBC, MarketWatch and central-bank feeds, refreshed every 15 minutes. Tone labels are keyword-based, not advice.</Note>
     <Pills opts={CATS.map(c=>[c,c])} val={cat} set={setCat}/>
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}}>
+      <TouchableOpacity onPress={()=>setAsset(null)} style={{paddingHorizontal:12,paddingVertical:7,borderRadius:16,marginRight:6,backgroundColor:!asset?'#e6ebff':C.card,borderWidth:1,borderColor:C.line}}><T s={12} w='700' c={!asset?C.bg:C.tx}>All assets</T></TouchableOpacity>
+      {ASSETS.map(x=>{const on=asset===x,k=cnt(x);return<TouchableOpacity key={x} onPress={()=>setAsset(on?null:x)} style={{flexDirection:'row',alignItems:'center',paddingLeft:10,paddingRight:6,paddingVertical:6,borderRadius:16,marginRight:6,backgroundColor:on?'#e6ebff':C.card,borderWidth:1,borderColor:on?'#e6ebff':C.line}}>
+        <View style={{width:8,height:8,borderRadius:4,backgroundColor:AS[x][0],marginRight:6}}/><T s={12} w='700' c={on?C.bg:C.tx}>{x}</T>
+        <View style={{minWidth:22,marginLeft:6,paddingHorizontal:6,paddingVertical:1,borderRadius:10,backgroundColor:on?C.bg:k?C.ac:C.line,alignItems:'center'}}><T s={11} w='800' c={on||k?'#fff':C.mut}>{k}</T></View></TouchableOpacity>})}</ScrollView>
+    {asset&&<Row style={{marginBottom:10}}><T c={C.mut} s={13}>Showing <T w='700'>{L.length}</T> stories tagged <T w='700' c={AS[asset][0]==='#b45309'?'#f59e0b':C.tx}>{asset}</T></T><Btn t='Clear ✕' on={()=>setAsset(null)} style={{paddingVertical:5}}/></Row>}
     <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{main}{side}</View><Reader n={sel} onClose={()=>setSel(null)}/></>;
 }
 function Risk(){

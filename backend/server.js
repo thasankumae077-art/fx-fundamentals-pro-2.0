@@ -43,15 +43,18 @@ async function dashboard(){
   return out;
 }
 // ---- News (Google News RSS searches + FXStreet/CNBC/MarketWatch + central-bank feeds). Refreshed every 15 min.
-const Q=[['Central Banks','"central bank" OR Fed OR ECB OR "Bank of England" OR "Bank of Japan" interest rates'],['Currencies','forex OR "currency markets" OR "US dollar" OR euro OR yen OR sterling'],['Macro & Rates','inflation OR CPI OR "nonfarm payrolls" OR "Treasury yields" OR GDP'],['Macro & Rates','site:reuters.com inflation OR economy OR "interest rates"'],['Currencies','site:reuters.com forex OR currencies OR dollar'],['Top Stories','forex OR "central banks" OR inflation OR "interest rates"']];
-const DIRECT=[['https://www.fxstreet.com/rss/news','FXStreet','Currencies'],['https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664','CNBC',null],['https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258','CNBC',null],['https://feeds.content.dowjones.io/public/rss/mw_marketpulse','MarketWatch',null],['https://feeds.content.dowjones.io/public/rss/mw_topstories','MarketWatch',null]];
+const Q=[{cat:'Central Banks',q:'"central bank" OR Fed OR ECB OR "Bank of England" OR "Bank of Japan" interest rates'},{cat:'Currencies',q:'forex OR "currency markets" OR "US dollar" OR euro OR yen OR sterling'},{cat:'Macro & Rates',q:'inflation OR CPI OR "nonfarm payrolls" OR "Treasury yields" OR GDP'},{cat:'Macro & Rates',q:'site:reuters.com inflation OR economy OR "interest rates"'},{cat:'Currencies',q:'site:reuters.com forex OR currencies OR dollar'},
+ ...[['USD','"US dollar" OR "Federal Reserve" OR "dollar index"'],['EUR','euro OR ECB OR eurozone OR EUR/USD'],['GBP','sterling OR "Bank of England" OR GBP/USD'],['JPY','yen OR "Bank of Japan" OR USD/JPY'],['CHF','"Swiss franc" OR SNB OR "Swiss National Bank"'],['CAD','"Canadian dollar" OR loonie OR "Bank of Canada"'],['AUD','"Australian dollar" OR RBA OR "Reserve Bank of Australia"'],['NZD','"New Zealand dollar" OR RBNZ OR kiwi'],['XAUUSD','gold price OR XAUUSD OR bullion'],['XAGUSD','silver price OR XAGUSD']].map(([tag,q])=>({cat:'Top Stories',tag,q}))];
+const UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+const YF=q=>`https://feeds.finance.yahoo.com/rss/2.0/headline?s=${q}&region=US&lang=en-US`;
+const DIRECT=[['https://www.fxstreet.com/rss/news','FXStreet','Top Stories'],['https://www.fxempire.com/api/v1/en/articles/rss/news','FXEmpire','Top Stories'],['https://www.investing.com/rss/news_1.rss','Investing.com','Top Stories'],['https://www.investing.com/rss/news_11.rss','Investing.com','Top Stories'],['https://www.dailyfx.com/feeds/market-news','DailyFX','Top Stories'],[YF('GC=F'),'Yahoo Finance','Top Stories','XAUUSD'],[YF('SI=F'),'Yahoo Finance','Top Stories','XAGUSD'],[YF('EURUSD=X,GBPUSD=X,JPY=X,CHF=X,CAD=X,AUDUSD=X,NZDUSD=X'),'Yahoo Finance','Top Stories'],['https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664','CNBC',null],['https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258','CNBC',null],['https://feeds.content.dowjones.io/public/rss/mw_marketpulse','MarketWatch',null],['https://feeds.content.dowjones.io/public/rss/mw_topstories','MarketWatch',null]];
 const FEEDS=[['USD','https://www.federalreserve.gov/feeds/press_all.xml','Federal Reserve'],['EUR','https://www.ecb.europa.eu/rss/press.html','ECB'],['GBP','https://www.bankofengland.co.uk/rss/news','Bank of England'],['JPY','https://www.boj.or.jp/en/rss/whatsnew.xml','Bank of Japan'],['CHF','https://www.snb.ch/public/en/rss/pressrel','SNB'],['CAD','https://www.bankofcanada.ca/content_type/press-releases/feed/','Bank of Canada'],['AUD','https://www.rba.gov.au/rss/rss-cb-media-releases.xml','RBA'],['NZD','https://www.rbnz.govt.nz/feeds/news','RBNZ']];
 const HI=/rate decision|rate (hike|cut)|(raises|cuts|holds|lifts|slashes) (interest )?rates?|\bcpi\b|nfp|nonfarm|payrolls|intervention|emergency|fomc|\bmpc\b|surprise/i;
 const MED=/gdp|employment|unemployment|jobs|retail sales|pmi|minutes|speech|governor|powell|lagarde|bailey|ueda|testimony|inflation|central bank/i;
 const triage=t=>HI.test(t)?'HIGH':MED.test(t)?'MEDIUM':'LOW';
 const tone=t=>{const h=/hike|raises? (interest )?rates?|hawkish|higher for longer|hotter|accelerat|surge|\bbeats?\b/i.test(t),d=/\bcuts?\b|dovish|\beases?\b|easing|cools?|slows?|slump|\bmiss(es)?\b|weaker|\bfalls?\b/i.test(t);return h&&!d?'Hawkish':d&&!h?'Dovish':'Neutral'};
-const CURX={USD:/\b(usd|dollar|fed\b|federal reserve|fomc|powell|treasur|greenback)/i,EUR:/\b(eur\b|euro\b|ecb|lagarde|eurozone)/i,GBP:/\b(gbp|sterling|pound|boe\b|bank of england|bailey)/i,JPY:/\b(jpy|yen|boj\b|bank of japan|ueda)/i,CHF:/\b(chf|franc|snb\b|swiss)/i,CAD:/\b(cad\b|loonie|bank of canada|canadian)/i,AUD:/\b(aud\b|aussie|rba\b|australia)/i,NZD:/\b(nzd|kiwi|rbnz|new zealand)/i};
-const detectCur=t=>Object.keys(CURX).filter(c=>CURX[c].test(t)).slice(0,3);
+const CURX={USD:/\b(usd|u\.?s\.? dollar|dollar index|greenback|fed\b|federal reserve|fomc|powell|treasur)|(?<!canadian |australian |new zealand |hong kong )\bdollar\b/i,EUR:/\b(eur\b|euro\b|ecb|lagarde|eurozone)/i,GBP:/\b(gbp|sterling|pound|boe\b|bank of england|bailey)/i,JPY:/\b(jpy|yen|boj\b|bank of japan|ueda)/i,CHF:/\b(chf|franc|snb\b|swiss)/i,CAD:/\b(cad\b|loonie|bank of canada|canadian)/i,AUD:/\b(aud\b|aussie|rba\b|australia)/i,NZD:/\b(nzd|kiwi|rbnz|new zealand)/i,XAUUSD:/\b(gold|bullion|xau|xauusd)\b/i,XAGUSD:/\b(silver|xag|xagusd)\b/i};
+const detectCur=t=>Object.keys(CURX).filter(c=>CURX[c].test(t)).slice(0,5);
 const classify=t=>/central bank|\bfed\b|fomc|\becb\b|\bboe\b|\bboj\b|\bsnb\b|\brba\b|rbnz|rate (cut|hike|decision)|powell|lagarde|bailey|ueda|monetary policy/i.test(t)?'Central Banks':/inflation|\bcpi\b|\bgdp\b|payroll|yield|treasur|jobs report|unemployment|\bpmi\b|retail sales|recession/i.test(t)?'Macro & Rates':/forex|\bfx\b|dollar|\beuro\b|\byen\b|sterling|\bpound\b|franc|loonie|aussie|kiwi|currenc/i.test(t)?'Currencies':'Top Stories';
 const dec=s=>s.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ');
 const summ=(d,t)=>{const x=dec((d||'').replace(/<[^>]+>/g,' ')).replace(/\s+/g,' ').trim();return x&&!x.toLowerCase().startsWith(t.replace(/ - [^-]+$/,'').toLowerCase().slice(0,30))?x.slice(0,500):''};
@@ -61,24 +64,43 @@ function parseRss(x,src){return[...x.matchAll(/<item(?:\s[^>]*)?>([\s\S]*?)<\/it
   const d=new Date(g('pubDate')||g('dc:date')),title=g('title'),raw=g('description')||g('content:encoded');
   const im=(b.match(/<media:(?:content|thumbnail)[^>]*url=["']([^"']+)["']/)||b.match(/<enclosure[^>]*type=["']image[^"']*["'][^>]*url=["']([^"']+)["']/)||b.match(/<enclosure[^>]*url=["']([^"']+\.(?:jpe?g|png|webp)[^"']*)["']/i)||raw.match(/<img[^>]+src=["']([^"']+)["']/)||[])[1];
   return{title,link:g('link'),source:g('source')||src||'',summary:summ(raw,title),img:fix(im),time:isNaN(d)?new Date().toISOString():d.toISOString()}})}
-async function ogImage(u){try{const r=await fetch(u,{headers:{'User-Agent':'Mozilla/5.0 (compatible; FXFundamentalsPro/1.0)'},signal:AbortSignal.timeout(5000)});const t=(await r.text()).slice(0,200000);
-  const m=t.match(/<meta[^>]+(?:property|name)=["']og:image["'][^>]*content=["']([^"']+)["']/i)||t.match(/<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']og:image["']/i);return fix(m&&dec(m[1]))}catch{return null}}
-async function addImages(items){const todo=items.filter(i=>!i.img&&i.link&&!/news\.google\.com/.test(i.link)).slice(0,24);for(let k=0;k<todo.length;k+=6)await Promise.all(todo.slice(k,k+6).map(async i=>{i.img=await ogImage(i.link)}))}
+const META=['og:image:secure_url','og:image','twitter:image','twitter:image:src'];
+function pickMeta(t){for(const k of META){const m=t.match(new RegExp(`<meta[^>]+(?:property|name)=["']${k}["'][^>]*content=["']([^"']+)["']`,'i'))||t.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${k}["']`,'i'));if(m){const u=fix(dec(m[1]));if(u&&!/logo|favicon|placeholder/i.test(u))return u}}return null}
+async function head(r){let s='';const rd=r.body.getReader(),d=new TextDecoder();while(s.length<250000){const{done,value}=await rd.read();if(done)break;s+=d.decode(value,{stream:true})}rd.cancel().catch(()=>{});return s}
+async function ogImage(u){try{const r=await fetch(u,{headers:{'User-Agent':UA,Accept:'text/html,application/xhtml+xml'},redirect:'follow',signal:AbortSignal.timeout(6000)});return pickMeta(await head(r))}catch{return null}}
+// Google News article links -> publisher URL. Old tokens are base64 URLs; new ones need Google's batchexecute endpoint.
+const gnId=l=>(l.match(/news\.google\.com\/(?:rss\/)?articles\/([^?#]+)/)||[])[1];
+function legacyDecode(id){let b=Buffer.from(id.replace(/-/g,'+').replace(/_/g,'/'),'base64');if(b[0]===8&&b[1]===0x13&&b[2]===0x22)b=b.subarray(3);if(b.length>3&&b[b.length-3]===0xd2&&b[b.length-2]===1&&b[b.length-1]===0)b=b.subarray(0,-3);const len=b[0],u=(len>=0x80?b.subarray(2,len+1):b.subarray(1,len+1)).toString('latin1');return/^https?:\/\//.test(u)?u:null}
+async function gnResolve(id){
+  const l=legacyDecode(id);if(l)return l;
+  const H={'User-Agent':UA,Cookie:'CONSENT=YES+cb; SOCS=CAI'},html=await getText(`https://news.google.com/rss/articles/${id}`,{headers:H},1);
+  const sg=(html.match(/data-n-a-sg="([^"]+)"/)||[])[1],ts=(html.match(/data-n-a-ts="([^"]+)"/)||[])[1];if(!sg||!ts)throw new Error('no signature');
+  const inner=JSON.stringify(['garturlreq',[['X','X',['X','X'],null,null,1,1,'US:en',null,1,null,null,null,null,null,0,1],'X','X',1,[1,1,1],1,1,null,0,0,null,0],id,+ts,sg]);
+  const r=await fetch('https://news.google.com/_/DotsSplashUi/data/batchexecute',{method:'POST',headers:{...H,'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'f.req='+encodeURIComponent(JSON.stringify([[['Fbv4je',inner,null,'generic']]])),signal:AbortSignal.timeout(8000)}),t=await r.text();
+  try{return JSON.parse(JSON.parse(t.split('\n\n')[1].slice(0,-2))[0][2])[1]}catch{const m=t.match(/garturlres\\+",\\+"(https?:[^"\\]+)/);return m?m[1]:null}}
+async function enrich(items){
+  const gl=items.filter(i=>gnId(i.link||'')).sort((a,b)=>b.time.localeCompare(a.time)).slice(0,30);
+  for(let k=0;k<gl.length;k+=3)await Promise.all(gl.slice(k,k+3).map(async i=>{try{const u=await gnResolve(gnId(i.link));if(u&&!/news\.google\.com/.test(u))i.link=u}catch{}}));
+  const todo=items.filter(i=>!i.img&&i.link&&!/news\.google\.com/.test(i.link)).slice(0,40);
+  for(let k=0;k<todo.length;k+=6)await Promise.all(todo.slice(k,k+6).map(async i=>{i.img=await ogImage(i.link)}))}
 const rel=iso=>{const s=(Date.now()-new Date(iso))/1e3,m=s/60,h=m/60,d=h/24,f=Math.floor;return s<60?'just now':m<60?`${f(m)} min ago`:h<24?`${f(h)} hour${f(h)>1?'s':''} ago`:d<7?`${f(d)} day${f(d)>1?'s':''} ago`:new Date(iso).toISOString().slice(0,10)};
 const present=n=>({id:n.id,title:n.title,source:n.source,publishedAt:rel(n.time),time:n.time,url:n.link,link:n.link,imageUrl:n.img||null,category:n.category,summary:n.summary,impact:n.impact,tone:n.tone,cur:n.cur,currencies:n.cur});
-let news=[];const ids=new Set(),clients=new Set();let lastPoll=null;
+let news=[];const idx=new Map(),clients=new Set();let lastPoll=null;
 async function pollNews(){
-  const jobs=[...Q.map(([cat,q])=>({url:`https://news.google.com/rss/search?q=${encodeURIComponent(q+' when:2d')}&hl=en-US&gl=US&ceid=US:en`,cat,src:''})),...DIRECT.map(([url,src,cat])=>({url,src,cat,gen:!cat})),...FEEDS.map(([cur,url,src])=>({url,src,cat:'Central Banks',cur}))];
-  const rs=await Promise.allSettled(jobs.map(async j=>({j,items:parseRss(await getText(j.url,{},2),j.src)}))),fresh=[];
+  const jobs=[...Q.map(({cat,q,tag})=>({url:`https://news.google.com/rss/search?q=${encodeURIComponent(q+' when:2d')}&hl=en-US&gl=US&ceid=US:en`,cat,tag,src:''})),...DIRECT.map(([url,src,cat,tag])=>({url,src,cat,tag,gen:cat===null})),...FEEDS.map(([cur,url,src])=>({url,src,cat:'Central Banks',tag:cur}))];
+  const rs=await Promise.allSettled(jobs.map(async j=>({j,items:parseRss(await getText(j.url,{headers:{'User-Agent':UA}},2),j.src)}))),fresh=[];
   for(const r of rs){if(r.status!=='fulfilled')continue;const{j,items}=r.value;
-    for(const it of items){if(!it.title||Date.now()-new Date(it.time)>7*864e5)continue;const text=it.title+' '+it.summary;
-      const cat=!j.cat||j.cat==='Top Stories'?classify(text):j.cat;if(j.gen&&cat==='Top Stories')continue;
-      const norm=it.title.toLowerCase().replace(/ - [^-]+$/,'').replace(/[^a-z0-9]/g,''),id=crypto.createHash('md5').update(norm).digest('hex').slice(0,12);
-      if(ids.has(id))continue;ids.add(id);fresh.push({id,...it,category:cat,cur:j.cur?[j.cur]:detectCur(text),impact:triage(it.title),tone:tone(text)})}}
-  await addImages(fresh);lastPoll=new Date().toISOString();
+    for(const it of items){if(!it.title||Date.now()-new Date(it.time)>7*864e5)continue;
+      const text=it.title+' '+it.summary,tags=[...new Set([...(j.tag?[j.tag]:[]),...detectCur(text)])],cat=!j.cat||j.cat==='Top Stories'?classify(text):j.cat;
+      if(j.gen&&cat==='Top Stories'&&!tags.length)continue;
+      const norm=it.title.toLowerCase().replace(/ - [^-]+$/,'').replace(/[^a-z0-9]/g,''),id=crypto.createHash('md5').update(norm).digest('hex').slice(0,12),ex=idx.get(id);
+      if(ex){tags.forEach(t=>{if(!ex.cur.includes(t))ex.cur.push(t)});if(!ex.img&&it.img)ex.img=it.img;continue}
+      const o={id,...it,category:cat,cur:tags,impact:triage(it.title),tone:tone(text)};idx.set(id,o);fresh.push(o)}}
+  lastPoll=new Date().toISOString();
   if(fresh.length){news=[...fresh,...news].sort((a,b)=>b.time.localeCompare(a.time)).slice(0,400);
-    if(ids.size>3000){ids.clear();news.forEach(n=>ids.add(n.id))}
+    if(idx.size>3000){idx.clear();news.forEach(n=>idx.set(n.id,n))}
     const msg=`event: news\ndata: ${JSON.stringify(fresh.map(present))}\n\n`;clients.forEach(c=>c.write(msg))}
+  enrich(fresh).catch(()=>{}); // resolves Google links + fetches og:image in the background; items update in place
 }
 const loop=()=>pollNews().catch(()=>{}).finally(()=>setTimeout(loop,9e5));const firstPoll=loop();
 // ---- Fundamentals (auto). Every metric has a chain of sources tried in order; first fresh one wins. Missing = null, never estimated.
