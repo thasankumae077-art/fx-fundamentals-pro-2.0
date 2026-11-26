@@ -284,25 +284,24 @@ function EconCalendar({cal,fx}){
   const dateCells=Array.from({length:offset},(_,i)=>({blank:true,key:`blank-${i}`})).concat(Array.from({length:days},(_,i)=>{const k=`${first.getUTCFullYear()}-${p2(first.getUTCMonth()+1)}-${p2(i+1)}`;return{key:k,day:i+1}}));
   const eventPairs=c=>({USD:'EURUSD · GBPUSD · AUDUSD · NZDUSD · USDJPY · USDCHF · USDCAD',EUR:'EURUSD · EURGBP · EURJPY · EURCHF · EURAUD · EURCAD · EURNZD',GBP:'GBPUSD · EURGBP · GBPJPY · GBPCHF · GBPAUD · GBPCAD · GBPNZD',JPY:'USDJPY · EURJPY · GBPJPY · AUDJPY · CADJPY · CHFJPY · NZDJPY',CHF:'USDCHF · EURCHF · GBPCHF · AUDCHF · CADCHF · NZDCHF',CAD:'USDCAD · EURCAD · GBPCAD · AUDCAD · NZDCAD',AUD:'AUDUSD · EURAUD · GBPAUD · AUDJPY · AUDCAD · AUDNZD',NZD:'NZDUSD · EURNZD · GBPNZD · AUDNZD · NZDJPY · NZDCAD'}[c]||'');
 
-  // Fixed column widths keep the header and every event row aligned.
-  // The table scrolls horizontally on narrow screens instead of compressing its columns.
-  const COL={time:76,currency:78,impact:84,event:270,detail:76,actual:92,forecast:92,previous:92};
-  const TABLE_WIDTH=Object.values(COL).reduce((a,b)=>a+b,0);
-  const cell=(width,align='left')=>({width,flexShrink:0,textAlign:align,paddingHorizontal:8});
+  const COL={time:54,currency:52,impact:68,detail:58,actual:66,forecast:66,previous:66};
+  const MIN_W=680;
+  const cell=(w,align='left')=>({width:w,flexShrink:0,textAlign:align,paddingHorizontal:5});
+  const evStyle={flex:1,minWidth:150,paddingHorizontal:6};
 
   const EventRow=({e})=>{
     const d=ist(new Date(e.timestamp).getTime()),v=verdict(e);
-    return<View style={{width:TABLE_WIDTH,flexDirection:'row',alignItems:'center',minHeight:44,paddingVertical:8,borderTopWidth:1,borderTopColor:C.line,backgroundColor:C.bg}}>
+    return<View style={{width:'100%',flexDirection:'row',alignItems:'center',minHeight:42,paddingVertical:7,borderTopWidth:1,borderTopColor:C.line,backgroundColor:C.bg}}>
       <T s={11} w='700' c={C.mut} style={cell(COL.time)}>{p2(d.h)}:{p2(d.m)}</T>
       <T s={11} w='800' c={C.ac} style={cell(COL.currency)}>{e.currency}</T>
       <View style={{...cell(COL.impact),flexDirection:'row',alignItems:'center'}}>
-        <View style={{width:8,height:8,borderRadius:4,backgroundColor:dc[e.impact]||C.mut,marginRight:7}}/>
+        <View style={{width:7,height:7,borderRadius:4,backgroundColor:dc[e.impact]||C.mut,marginRight:5}}/>
         <T s={10} c={dc[e.impact]||C.mut}>{e.impact}</T>
       </View>
-      <T s={12} style={{...cell(COL.event),paddingRight:12}}>{e.title}</T>
-      <View style={{width:COL.detail,flexShrink:0,paddingHorizontal:8}}>
-        <TouchableOpacity accessibilityRole='button' accessibilityLabel={`View details for ${e.title}`} onPress={()=>setDetail(e)} style={{alignSelf:'flex-start',paddingVertical:5,paddingHorizontal:9,borderRadius:6,backgroundColor:'#1d315f',borderWidth:1,borderColor:'#2d4b85'}}>
-          <T s={11} w='700' c='#bfdbfe'>View</T>
+      <T s={12} style={evStyle}>{e.title}</T>
+      <View style={{width:COL.detail,flexShrink:0,paddingHorizontal:4}}>
+        <TouchableOpacity accessibilityRole='button' accessibilityLabel={`View details for ${e.title}`} onPress={()=>setDetail(e)} style={{alignSelf:'flex-start',paddingVertical:4,paddingHorizontal:8,borderRadius:6,backgroundColor:'#1d315f',borderWidth:1,borderColor:'#2d4b85'}}>
+          <T s={10} w='700' c='#bfdbfe'>View</T>
         </TouchableOpacity>
       </View>
       <T s={11} w='700' c={v>0?C.up:v<0?C.dn:C.tx} style={cell(COL.actual,'right')}>{e.actual??'—'}</T>
@@ -311,7 +310,7 @@ function EconCalendar({cal,fx}){
     </View>;
   };
 
-  const side=<View style={{width:wide?260:'100%',marginRight:wide?14:0}}>
+  const side=<View style={{width:wide?235:'100%',marginRight:wide?12:0}}>
     <Card title='Month at a glance'>
       <Row style={{marginBottom:10}}>
         <TouchableOpacity onPress={()=>setAnchor(k=>{const d=keyDate(`${k.slice(0,7)}-01`);d.setUTCMonth(d.getUTCMonth()-1);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-01`})}><T s={20}>‹</T></TouchableOpacity>
@@ -320,13 +319,13 @@ function EconCalendar({cal,fx}){
       </Row>
       <View style={{flexDirection:'row',flexWrap:'wrap'}}>
         {WD.map(x=><T key={x} s={10} c={C.mut} style={{width:'14.28%',textAlign:'center',paddingVertical:5}}>{x[0]}</T>)}
-        {dateCells.map(x=><TouchableOpacity key={x.key} disabled={x.blank} onPress={()=>{setPicked(x.key);setRange('Selected Day')}} style={{width:'14.28%',height:34,alignItems:'center',justifyContent:'center',borderRadius:7,backgroundColor:x.key===picked?'#1d4ed8':x.key===today?'#1e3a5f':'transparent'}}><T s={11} c={x.blank?C.mut:x.key===picked?'#fff':C.tx}>{x.day||''}</T></TouchableOpacity>)}
+        {dateCells.map(x=><TouchableOpacity key={x.key} disabled={x.blank} onPress={()=>{setPicked(x.key);setRange('Selected Day')}} style={{width:'14.28%',height:32,alignItems:'center',justifyContent:'center',borderRadius:7,backgroundColor:x.key===picked?'#1d4ed8':x.key===today?'#1e3a5f':'transparent'}}><T s={11} c={x.blank?C.mut:x.key===picked?'#fff':C.tx}>{x.day||''}</T></TouchableOpacity>)}
       </View>
     </Card>
     <Card title='Quick date ranges'>
       <View style={{flexDirection:'row',flexWrap:'wrap'}}>
-        {ranges.map(r=><TouchableOpacity key={r} onPress={()=>{setRange(r);setPicked(null)}} style={{paddingHorizontal:9,paddingVertical:7,margin:3,borderRadius:7,backgroundColor:range===r?C.ac:C.line}}><T s={11} w='700'>{r}</T></TouchableOpacity>)}
-        <TouchableOpacity onPress={jumpNext} style={{paddingHorizontal:12,paddingVertical:7,margin:3,borderRadius:7,backgroundColor:'#14532d',borderWidth:1,borderColor:C.up}}><T s={11} w='800' c='#bbf7d0'>↗ Up Next</T></TouchableOpacity>
+        {ranges.map(r=><TouchableOpacity key={r} onPress={()=>{setRange(r);setPicked(null)}} style={{paddingHorizontal:8,paddingVertical:6,margin:2,borderRadius:7,backgroundColor:range===r?C.ac:C.line}}><T s={11} w='700'>{r}</T></TouchableOpacity>)}
+        <TouchableOpacity onPress={jumpNext} style={{paddingHorizontal:10,paddingVertical:6,margin:2,borderRadius:7,backgroundColor:'#14532d',borderWidth:1,borderColor:C.up}}><T s={11} w='800' c='#bbf7d0'>↗ Up Next</T></TouchableOpacity>
       </View>
     </Card>
     <Card title='Central bank policy rates'>
@@ -351,67 +350,17 @@ function EconCalendar({cal,fx}){
     <TextInput value={search} onChangeText={setSearch} placeholder='⌕  Search Events' placeholderTextColor={C.mut} style={{color:C.tx,backgroundColor:C.card,borderWidth:1,borderColor:C.line,borderRadius:8,paddingHorizontal:12,paddingVertical:9,marginBottom:10}}/>
 
     <Card style={{padding:0,overflow:'hidden'}}>
-      <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={{minWidth:TABLE_WIDTH}}>
-        <View style={{width:TABLE_WIDTH}}>
-          <View style={{width:TABLE_WIDTH,flexDirection:'row',alignItems:'center',paddingVertical:11,backgroundColor:'#172448',borderBottomWidth:1,borderBottomColor:C.line}}>
+      <ScrollView horizontal={!wide} showsHorizontalScrollIndicator contentContainerStyle={{width:wide?'100%':undefined,minWidth:wide?'100%':MIN_W}}>
+        <View style={{width:'100%',minWidth:wide?0:MIN_W}}>
+          <View style={{width:'100%',flexDirection:'row',alignItems:'center',paddingVertical:10,backgroundColor:'#172448',borderBottomWidth:1,borderBottomColor:C.line}}>
             <T s={10} w='800' c={C.mut} style={cell(COL.time)}>TIME</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.currency)}>CURRENCY</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.currency)}>CCY</T>
             <T s={10} w='800' c={C.mut} style={cell(COL.impact)}>IMPACT</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.event)}>EVENT</T>
+            <T s={10} w='800' c={C.mut} style={evStyle}>EVENT</T>
             <T s={10} w='800' c={C.mut} style={cell(COL.detail)}>DETAIL</T>
             <T s={10} w='800' c={C.mut} style={cell(COL.actual,'right')}>ACTUAL</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.forecast,'right')}>FORECAST</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.previous,'right')}>PREVIOUS</T>
-          </View>
-          {!filtered.length?<View style={{padding:18}}><T c={C.mut}>No events match this date range and filters.</T></View>:Object.entries(grouped).map(([k,ev])=><View key={k} style={{width:TABLE_WIDTH}}>
-            <View style={{backgroundColor:'#172448',padding:8}}><T s={12} w='800'>{dayLabel(k)} <T c={C.mut} s={10}>· {ev.length} events</T></T></View>
-            {ev.map(e=><EventRow key={e.id} e={e}/>)}
-          </View>)}
-        </View>
-      </ScrollView>
-    </Card>
-    <T c={C.mut} s={10}>Use the horizontal table scroll on smaller screens. Select View in the Detail column to open release figures and commonly affected currency pairs.</T>
-  </View>;
+            <T s={10} w='800' c={C.mut} style={cell(COL.forecast,'right')}>FCST</T>
 
-  return<>
-    <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{side}{main}</View>
-
-    <Modal transparent animationType='slide' visible={importOpen} onRequestClose={()=>setImportOpen(false)}>
-      <View style={{flex:1,backgroundColor:'rgba(0,0,0,.72)',justifyContent:'center',padding:wide?40:12}}>
-        <View style={{backgroundColor:C.card,borderRadius:12,padding:16,borderWidth:1,borderColor:C.line,maxHeight:'90%'}}>
-          <Row><T s={18} w='800'>Import FF JSON/CSV</T><TouchableOpacity onPress={()=>setImportOpen(false)}><T s={20}>✕</T></TouchableOpacity></Row>
-          <Note>Paste a Forex Factory weekly JSON or CSV export. Supported columns: Date/Time, Currency/Country, Title/Event, Impact, Actual, Forecast, Previous.</Note>
-          <TextInput value={paste} onChangeText={setPaste} multiline placeholder='Paste JSON or CSV here…' placeholderTextColor={C.mut} textAlignVertical='top' style={{minHeight:210,maxHeight:380,color:C.tx,backgroundColor:C.bg,borderColor:C.line,borderWidth:1,borderRadius:8,padding:10}}/>
-          <Row style={{marginTop:10}}><Btn t='Cancel' on={()=>setImportOpen(false)}/><Btn primary t='Import events' on={importData}/></Row>
-        </View>
-      </View>
-    </Modal>
-
-    <Modal transparent animationType='slide' visible={!!detail} onRequestClose={()=>setDetail(null)}>
-      <View style={{flex:1,backgroundColor:'rgba(0,0,0,.7)',justifyContent:'flex-end',alignItems:'flex-end'}}>
-        <TouchableOpacity onPress={()=>setDetail(null)} style={{position:'absolute',top:0,left:0,right:0,bottom:0}}/>
-        <View style={{width:wide?480:'100%',maxHeight:'85%',backgroundColor:C.bg,borderTopLeftRadius:14,borderTopRightRadius:14,borderWidth:1,borderColor:C.line,padding:18}}>
-          {detail&&<>
-            <Row><T s={11} c={C.mut} w='800'>EVENT DETAILS</T><TouchableOpacity onPress={()=>setDetail(null)}><T s={20}>✕</T></TouchableOpacity></Row>
-            <T s={21} w='800' style={{marginVertical:12}}>{detail.title}</T>
-            <Row>
-              <T c={C.ac} w='800'>{detail.currency}</T>
-              <T c={dc[detail.impact]} w='800'>{detail.impact} Impact</T>
-              <T c={C.mut} s={12}>{new Date(detail.timestamp).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'})} IST</T>
-            </Row>
-            <Card title='Release figures'>
-              <Row><T c={C.mut}>Actual</T><T c={verdict(detail)>0?C.up:verdict(detail)<0?C.dn:C.tx} w='800'>{detail.actual??'—'}</T></Row>
-              <Row><T c={C.mut}>Forecast</T><T>{detail.forecast??'—'}</T></Row>
-              <Row><T c={C.mut}>Previous</T><T>{detail.previous??'—'}</T></Row>
-            </Card>
-            <Card title='Commonly affected pairs'><T s={12}>{eventPairs(detail.currency)}</T></Card>
-            <T s={10} c={C.mut}>Better/worse classification is an indicator-direction heuristic. Always verify the release definition and market reaction.</T>
-          </>}
-        </View>
-      </View>
-    </Modal>
-  </>;
-}
 function LineChart({data,color,h=140}){
   const [w,setW]=useState(0),lo=Math.min(...data),hi=Math.max(...data),X=i=>i*(w/(data.length-1)),Y=v=>h-6-(v-lo)/((hi-lo)||1)*(h-12);
   return<View onLayout={e=>setW(e.nativeEvent.layout.width)} style={{height:h,backgroundColor:C.bg,borderRadius:8,overflow:'hidden',borderWidth:1,borderColor:C.line}}>
