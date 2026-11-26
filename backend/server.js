@@ -171,19 +171,21 @@ async function fundamentals(){
 const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json'],CAL_NEXT=['https://nfs.faireconomy.media/ff_calendar_nextweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_nextweek.json'],MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
 async function firstJson(urls){let e;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2))}catch(x){e=x}}throw e}
 async function calendar(){
-  const[w,n]=await Promise.allSettled([firstJson(CAL_THIS),firstJson(CAL_NEXT)]);
-  if(w.status==='fulfilled'&&Array.isArray(w.value)){
-    const raw=[...w.value,...(n.status==='fulfilled'&&Array.isArray(n.value)?n.value:[])];
-    const items=raw.filter(e=>MAJ.has(e.country)&&e.date).map(e=>({title:e.title,currency:e.country,impact:/high/i.test(e.impact)?'High':/med/i.test(e.impact)?'Medium':'Low',timestamp:e.date,forecast:e.forecast||'',previous:e.previous||'',actual:e.actual||''}));
-    const ok=items.filter(e=>e.timestamp).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
-    if(ok.length)return{items:ok,source:'Forex Factory public calendar feed (faireconomy.media)'};
-  }
-  const C2M={US:'USD',EU:'EUR',DE:'EUR',GB:'GBP',JP:'JPY',CH:'CHF',CA:'CAD',AU:'AUD',NZ:'NZD'};
-  const from=new Date(Date.now()-2*864e5).toISOString(),to=new Date(Date.now()+7*864e5).toISOString();
-  const j=JSON.parse(await getText(`https://economic-calendar.tradingview.com/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&countries=US,EU,DE,GB,JP,CH,CA,AU,NZ`,{headers:{'User-Agent':UA,Origin:'https://tradingview.com',Referer:'https://tradingview.com/'}},2));
-  const items=(j.result||[]).map(e=>({title:e.title||e.indicator||'Release',currency:C2M[e.country]||'USD',impact:e.importance>=1?'High':e.importance===0?'Medium':'Low',timestamp:e.date,forecast:e.forecast!=null?String(e.forecast):'',previous:e.previous!=null?String(e.previous):'',actual:e.actual!=null?String(e.actual):''})).filter(x=>MAJ.has(x.currency)&&x.timestamp).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
-  if(!items.length)throw new Error('Calendar feeds returned no events');
-  return{items,source:'TradingView Economic Calendar'};
+  const from=Date.now()-2*864e5,to=Date.now()+7*864e5;
+  const u=`https://freeserv.dukascopy.com/2.0/index.php?path=common/calendar&date_from=${from}&date_to=${to}&limit=300`;
+  const raw=JSON.parse(await getText(u,{headers:{'User-Agent':UA,Accept:'application/json'}},2));
+  const arr=Array.isArray(raw)?raw:(raw.items||raw.events||[]);
+  const items=arr.filter(e=>MAJ.has((e.currency||e.country||'').toUpperCase())).map(e=>({
+    title:e.title||e.event||'Economic Release',
+    currency:(e.currency||e.country||'').toUpperCase(),
+    impact:/high|3/i.test(String(e.impact||e.importance))?'High':/med|2/i.test(String(e.impact||e.importance))?'Medium':'Low',
+    timestamp:new Date(typeof e.timestamp==='number'?e.timestamp*1000:(e.date||Date.now())).toISOString(),
+    forecast:e.forecast!=null?String(e.forecast):'',
+    previous:e.previous!=null?String(e.previous):'',
+    actual:e.actual!=null?String(e.actual):''
+  })).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
+  if(!items.length)throw new Error('Dukascopy calendar returned 0 events');
+  return{items,source:'Dukascopy Economic Calendar'};
 }
 
 async function cot(){
