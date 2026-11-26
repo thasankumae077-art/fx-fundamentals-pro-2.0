@@ -67,27 +67,53 @@ async function pollNews(){
 }
 const loop=()=>pollNews().catch(()=>{}).finally(()=>setTimeout(loop,30000));loop();
 
-// ---- Fundamentals (auto): BIS policy rates + OECD series on FRED. Missing = null, never estimated.
+// ---- Fundamentals (auto). Every metric has a chain of sources tried in order; first fresh one wins. Missing = null, never estimated.
 const BIS={USD:'US',EUR:'XM',GBP:'GB',JPY:'JP',CHF:'CH',CAD:'CA',AUD:'AU',NZD:'NZ'};
 const CCs={USD:['US'],EUR:['EZ','EA19'],GBP:['GB'],JPY:['JP'],CHF:['CH'],CAD:['CA'],AUD:['AU'],NZD:['NZ']};
-const SER={cpi:c=>['M','Q'].map(f=>`CPALTT01${c}${f}659N`),unemp:c=>['M','Q'].map(f=>`LRHUTTTT${c}${f}156S`),gdp:c=>[`NAEXKP01${c}Q657S`,`NAEXKP01${c}Q657N`]};
-async function firstFresh(cur,m){for(const c of CCs[cur])for(const id of SER[m](c)){try{const r=await fred(id,1);if(Date.now()-new Date(r.date)<400*864e5)return{value:r.value,date:r.date,series:id}}catch{}}return null}
-async function policy(){
-  const csv=await getText('https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/M.'+Object.values(BIS).join('+')+'?lastNObservations=8',{headers:{Accept:'text/csv'}},3);
-  const L=csv.trim().split(/\r?\n/),h=L[0].replace(/"/g,'').split(','),ai=h.indexOf('REF_AREA'),ti=h.indexOf('TIME_PERIOD'),vi=h.indexOf('OBS_VALUE');
-  if(ai<0||ti<0||vi<0)throw new Error('Unexpected BIS format');
-  const by={};for(const l of L.slice(1)){const p=l.replace(/"/g,'').split(',');const v=parseFloat(p[vi]);if(!isNaN(v))(by[p[ai]]??=[]).push([p[ti],v])}
-  for(const k in by)by[k].sort((a,b)=>a[0].localeCompare(b[0]));return by}
+const I3={USD:'USA',GBP:'GBR',JPY:'JPN',CHF:'CHE',CAD:'CAN',AUD:'AUS',NZD:'NZL'},FQ={AUD:'Q',NZD:'Q'},MON='Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' '),MONI={};'JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC'.split(' ').forEach((m,i)=>MONI[m]=String(i+1).padStart(2,'0'));
+const iso=d=>/^\d{4}-\d{2}$/.test(d)?d+'-01':/^(\d{4})-Q(\d)$/.test(d)?d.slice(0,4)+'-'+String(d[6]*3-2).padStart(2,'0')+'-01':d;
+const ago=n=>new Date(Date.now()-n*864e5);
+function csvRow(l){const o=[];let c='',q=false;for(const ch of l){if(ch==='"')q=!q;else if(ch===','&&!q){o.push(c);c=''}else c+=ch}o.push(c);return o}
+async function fredPts(id){const r=(await getText('https://fred.stlouisfed.org/graph/fredgraph.csv?id='+id,{},1)).trim().split(/\r?\n/).slice(1).map(l=>l.split(',')).filter(p=>p[1]&&p[1]!=='.'&&!isNaN(+p[1])).map(p=>[p[0],+p[1]]);if(!r.length)throw new Error(id+' empty');return r}
+const yoy=p=>{const[d,v]=p.at(-1),t=new Date(d).getTime()-365*864e5,b=p.find(x=>Math.abs(new Date(x[0])-t)<25*864e5);if(!b)throw new Error('no year-ago point');return[[d,(v/b[1]-1)*100]]};
+const compound=p=>{if(p.length<4)throw new Error('<4 quarters');return[[p.at(-1)[0],(p.slice(-4).reduce((a,x)=>a*(1+x[1]/100),1)-1)*100]]};
+async function eurostat(ds,q){const j=JSON.parse(await getText(`https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/${ds}?format=JSON&lang=EN&${q}&lastTimePeriod=14`,{},2));const ix=j.dimension.time.category.index,o=[];for(const t of Object.keys(ix)){const v=j.value[ix[t]];if(v!=null)o.push([iso(t),v])}o.sort((a,b)=>a[0].localeCompare(b[0]));if(!o.length)throw new Error(ds+' empty');return o}
+async function boc(id){const j=JSON.parse(await getText(`https://www.bankofcanada.ca/valet/observations/${id}/json?start_date=${ago(520).toISOString().slice(0,10)}`,{},2));return j.observations.map(o=>[o.d,+o[id].v]).filter(p=>!isNaN(p[1]))}
+async function boe(){const f=ago(300);const t=await getText(`https://www.bankofengland.co.uk/boeapps/database/_iadb-fromshowcolumns.asp?csv.x=yes&Datefrom=${String(f.getDate()).padStart(2,'0')}/${MON[f.getMonth()]}/${f.getFullYear()}&Dateto=now&SeriesCodes=IUDBEDR&CSVF=TN&UsingCodes=Y&VPD=Y&VFD=N`,{headers:{'User-Agent':'Mozilla/5.0 (compatible; FXFundamentalsPro/1.0)'}},2);
+  const o=t.trim().split(/\r?\n/).slice(1).map(l=>csvRow(l)).map(p=>[new Date(p[0].trim()+' UTC'),+p[1]]).filter(p=>!isNaN(p[0])&&!isNaN(p[1])).map(([d,v])=>[d.toISOString().slice(0,10),v]);if(!o.length)throw new Error('BoE empty');return o}
+async function ecbDfr(){const t=await getText(`https://data-api.ecb.europa.eu/service/data/FM/B.U2.EUR.4F.KR.DFR.LEV?format=csvdata&startPeriod=${ago(300).toISOString().slice(0,10)}`,{},2),L=t.trim().split(/\r?\n/),h=L[0].split(','),ti=h.indexOf('TIME_PERIOD'),vi=h.indexOf('OBS_VALUE'),o=L.slice(1).map(l=>l.split(',')).map(p=>[p[ti],+p[vi]]).filter(p=>!isNaN(p[1]));if(!o.length)throw new Error('ECB DFR empty');return o}
+async function ons(path){const j=JSON.parse(await getText(`https://www.ons.gov.uk/${path}/data`,{},2));const o=(j.months||[]).map(m=>{const[y,mo]=m.date.split(' ');return[`${y}-${MONI[mo.toUpperCase()]}-01`,+m.value]}).filter(p=>!isNaN(p[1]));if(!o.length)throw new Error('ONS empty');return o}
+async function bisAll(){
+  const a=Object.values(BIS).join('+'),urls=[`https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/M.${a}?lastNObservations=9&format=csv`,`https://stats.bis.org/api/v1/data/WS_CBPOL/M.${a}?lastNObservations=9&format=csv`,`https://stats.bis.org/api/v2/data/dataflow/BIS/WS_CBPOL/1.0/M.${a}?lastNObservations=9`];let err;
+  for(const u of urls)for(const ac of ['text/csv','application/vnd.sdmx.data+csv;version=1.0.0']){try{
+    const L=(await getText(u,{headers:{Accept:ac}},1)).trim().split(/\r?\n/),h=csvRow(L[0]).map(x=>x.split(':')[0].trim()),ai=h.indexOf('REF_AREA'),ti=h.indexOf('TIME_PERIOD'),vi=h.indexOf('OBS_VALUE');
+    if(ai<0||ti<0||vi<0)throw new Error('unexpected columns '+h.slice(0,5));
+    const by={};for(const l of L.slice(1)){const p=csvRow(l),v=parseFloat(p[vi]);if(!isNaN(v))(by[p[ai].split(':')[0].trim()]??=[]).push([iso(p[ti]),v])}
+    if(!Object.keys(by).length)throw new Error('no rows');for(const k in by)by[k].sort((x,y)=>x[0].localeCompare(y[0]));return by}catch(e){err=`BIS ${u.split('/')[4]} ${ac.slice(0,6)}: ${e.message}`}}
+  throw new Error(err)}
+const fresh=p=>Date.now()-new Date(p.at(-1)[0])<400*864e5;
+async function pick(chain,diag,label,need){for(const[src,fn]of chain){try{const p=await fn();if(p?.length&&(!need||fresh(p)))return{pts:p,src};diag.push(`${label} ${src}: ${p?.length?'stale':'empty'}`)}catch(e){diag.push(`${label} ${src}: ${e.message}`)}}return null}
+const POLS={USD:[['FRED DFEDTARU',()=>fredPts('DFEDTARU')],['FRED FEDFUNDS',()=>fredPts('FEDFUNDS')]],EUR:[['ECB DFR',ecbDfr]],GBP:[['BoE Bank Rate',boe]],CAD:[['BoC target rate',()=>boc('V39079')]]};
+const CPIS={USD:[['FRED CPIAUCSL',async()=>yoy(await fredPts('CPIAUCSL'))]],EUR:[['Eurostat HICP',()=>eurostat('prc_hicp_manr','geo=EA&coicop=CP00&unit=RCH_A')]],GBP:[['ONS CPI D7G7',()=>ons('economy/inflationandpriceindices/timeseries/d7g7/mm23')]],CAD:[['BoC CPI index',async()=>yoy(await boc('V41690973'))]]};
+const UNS={USD:[['FRED UNRATE',()=>fredPts('UNRATE')]],EUR:[['Eurostat une_rt_m',()=>eurostat('une_rt_m','geo=EA&s_adj=SA&age=TOTAL&sex=T&unit=PC_ACT')]]};
+const GDPS={USD:[['FRED GDPC1 y/y',async()=>yoy(await fredPts('GDPC1'))]],EUR:[['Eurostat namq_10_gdp',()=>eurostat('namq_10_gdp','geo=EA&unit=CLV_PCH_SM&s_adj=SCA&na_item=B1GQ')]]};
 async function fundamentals(){
-  const cur=Object.keys(BIS),errors={};let pol={};
-  try{pol=await policy()}catch(e){errors.policy=e.message}
-  const m=await Promise.all(cur.map(async c=>({cpi:await firstFresh(c,'cpi'),gdp:await firstFresh(c,'gdp'),unemp:await firstFresh(c,'unemp')})));
-  const data={};
-  cur.forEach((c,i)=>{const s=pol[BIS[c]]||[],last=s.at(-1),old=s.length>1?s[0]:null,o={...m[i],rate:last?{value:last[1],date:last[0]}:null};
-    if(last&&old){const d=last[1]-old[1];o.stance={value:d>=.5?2:d>.05?1:d<=-.5?-2:d<-.05?-1:0,basis:`derived from policy-rate change ${d>=0?'+':''}${d.toFixed(2)}pp since ${old[0]}`}}
-    data[c]=o});
-  if(cur.every(c=>!data[c].rate&&!data[c].cpi&&!data[c].gdp&&!data[c].unemp))throw new Error('No fundamentals source reachable');
-  return{data,errors,sources:'BIS central-bank policy rates; OECD CPI/GDP/unemployment via FRED (latest available)'}}
+  const cur=Object.keys(BIS),diag=[];let bp;const bm=()=>bp??=bisAll();
+  const chains={
+    rate:c=>[...(POLS[c]||[]),['BIS WS_CBPOL',async()=>{const s=(await bm())[BIS[c]];if(!s)throw new Error('area missing');return s}],...CCs[c].flatMap(k=>['IRSTCI01','IR3TIB01'].map(p=>[`OECD ${p} market-rate proxy`,()=>fredPts(`${p}${k}M156N`)]))],
+    cpi:c=>{const f=FQ[c]||'M';return[...(CPIS[c]||[]),[`FRED ${I3[c]}CPIALL${f}INMEI`,async()=>yoy(await fredPts(`${I3[c]}CPIALL${f}INMEI`))],...CCs[c].map(k=>[`OECD CPALTT01${k}`,()=>fredPts(`CPALTT01${k}${f}659N`)])]},
+    unemp:c=>[...(UNS[c]||[]),...CCs[c].flatMap(k=>['M','Q'].map(f=>[`OECD LRHUTTTT${k}${f}`,()=>fredPts(`LRHUTTTT${k}${f}156S`)]))],
+    gdp:c=>[...(GDPS[c]||[]),...CCs[c].flatMap(k=>[[`OECD NAEXKP01${k} y/y`,()=>fredPts(`NAEXKP01${k}Q659S`)],[`OECD NAEXKP01${k} 4q compounded`,async()=>compound(await fredPts(`NAEXKP01${k}Q657S`))]])]};
+  const val=r=>r&&{value:+r.pts.at(-1)[1].toFixed(2),date:r.pts.at(-1)[0],src:r.src};
+  const rows=await Promise.all(cur.map(async c=>{const r=await pick(chains.rate(c),diag,c+' rate',false),o={rate:null,cpi:null,gdp:null,unemp:null};
+    const px=r&&r.src.includes('proxy')&&!fresh(r.pts)?null:r;o.rate=val(px);
+    if(px){const last=px.pts.at(-1),cut=new Date(last[0]).getTime()-190*864e5,old=px.pts.find(p=>new Date(p[0])>=cut)||px.pts[0],d=last[1]-old[1];
+      o.stance={value:d>=.5?2:d>.05?1:d<=-.5?-2:d<-.05?-1:0,basis:`derived from policy-rate change ${d>=0?'+':''}${d.toFixed(2)}pp since ${old[0]}`}}
+    for(const m of['cpi','gdp','unemp'])o[m]=val(await pick(chains[m](c),diag,`${c} ${m}`,true));return[c,o]}));
+  const data=Object.fromEntries(rows);
+  if(cur.every(c=>!data[c].rate&&!data[c].cpi&&!data[c].gdp&&!data[c].unemp))throw new Error('No fundamentals source reachable: '+[...new Set(diag)].slice(0,6).join(' | '));
+  const missing=[];cur.forEach(c=>['rate','cpi','gdp','unemp'].forEach(m=>{if(!data[c][m])missing.push(c+'.'+m)}));
+  return{data,missing,errors:{detail:[...new Set(diag)]},sources:'ECB, BoE, BoC, ONS, Eurostat, BIS, FRED (OECD/BLS series). Each value shows its own source and date.'}}
 // ---- HTTP
 const send=(res,code,body,type='application/json')=>{res.writeHead(code,{'Content-Type':type});res.end(typeof body==='string'?body:JSON.stringify(body))};
 http.createServer(async(req,res)=>{
@@ -102,7 +128,7 @@ http.createServer(async(req,res)=>{
     if(p==='/api/health')return send(res,200,{ok:true,uptime:process.uptime(),time:new Date().toISOString()});
     if(p==='/api/history')return send(res,200,await cached('h',36e5,ecb));
     if(p==='/api/dashboard')return send(res,200,await cached('d',3e5,dashboard));
-    if(p==='/api/fundamentals')return send(res,200,await cached('f',216e5,fundamentals));
+    if(p==='/api/fundamentals')return send(res,200,await cached('f',18e5,fundamentals));
     if(p==='/api/news')return send(res,200,{items:news,lastPoll});
     if(p==='/api/news/status')return send(res,200,{count:news.length,high:news.filter(n=>n.impact==='HIGH').length,lastPoll,clients:clients.size});
     if(p==='/api/news/stream'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache',Connection:'keep-alive'});res.write(': connected\n\n');clients.add(res);const hb=setInterval(()=>res.write(': hb\n\n'),25000);return req.on('close',()=>{clearInterval(hb);clients.delete(res)})}

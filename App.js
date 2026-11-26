@@ -74,7 +74,7 @@ function Overview({A,sc,fund}){
 }
 function Fundamentals({fx,sc}){
   if(!fx)return<Wait/>;const D=fx.data||{};
-  const R=(l,o,u='%')=><Row style={{paddingVertical:3}}><T c={C.mut} s={13}>{l}</T><T s={13} w='600'>{o?`${f2(o.value)}${u}`:'n/a'} <T c={C.mut} s={10}>{o?.date||''}</T></T></Row>;
+  const R=(l,o,u='%')=><Row style={{paddingVertical:3}}><T c={C.mut} s={13}>{l}</T><T s={13} w='600'>{o?`${f2(o.value)}${u}`:'n/a'} <T c={C.mut} s={10}>{o?o.date+' · '+(o.src||''):''}</T></T></Row>;
   return<>
     <T s={24} w='800'>Fundamentals</T>
     <Note>Filled automatically — nothing to type. Sources: {fx.sources}. “n/a” means no recent official figure was found; it is left out of the score (never estimated). Stance is a rule-based proxy from the recent policy-rate change, not a statement by the bank. Research aid, not a trade signal.{fx.stale?' (Showing stale server cache.)':''}</Note>
@@ -93,7 +93,7 @@ function Scanner({A,sc}){
 }
 function Macro({d}){
   if(!d)return<Wait/>;const F=d.fred||{},B=d.bls||{};
-  const R=(l,o,u='')=><Row key={l} style={{paddingVertical:5}}><T c={C.mut}>{l}</T><T w='700'>{o?`${f2(o.value)}${u}`:'n/a'} <T c={C.mut} s={10}>{o?.date||''}</T></T></Row>;
+  const R=(l,o,u='')=><Row key={l} style={{paddingVertical:5}}><T c={C.mut}>{l}</T><T w='700'>{o?`${f2(o.value)}${u}`:'n/a'} <T c={C.mut} s={10}>{o?o.date+' · '+(o.src||''):''}</T></T></Row>;
   const sp=F.us10y&&F.us2y?F.us10y.value-F.us2y.value:null,be=F.us10y&&F.tips10y?F.us10y.value-F.tips10y.value:null;
   return<>
     <Card title="Derived">{R('2s10s spread',sp!=null&&{value:sp},' pp')}{R('10Y real yield (TIPS)',F.tips10y,'%')}{R('10Y breakeven inflation',be!=null&&{value:be},'%')}</Card>
