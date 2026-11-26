@@ -167,6 +167,31 @@ async function fundamentals(){
   if(cur.every(c=>!data[c].rate&&!data[c].cpi&&!data[c].gdp&&!data[c].unemp))throw new Error('No fundamentals source reachable: '+[...new Set(diag)].slice(0,6).join(' | '));
   const missing=[];cur.forEach(c=>['rate','cpi','gdp','unemp'].forEach(m=>{if(!data[c][m])missing.push(c+'.'+m)}));
   return{data,missing,errors:{detail:[...new Set(diag)]},sources:'ECB, BoE, BoC, ONS, Eurostat, BIS, FRED (OECD/BLS series). Each value shows its own source and date.'}}
+// ---- Economic calendar (Forex Factory public feed via faireconomy.media) + CFTC COT
+const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json'],CAL_NEXT=['https://nfs.faireconomy.media/ff_calendar_nextweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_nextweek.json'],MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
+async function firstJson(urls){let e;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2))}catch(x){e=x}}throw e}
+async function calendar(){
+  const[w,n]=await Promise.allSettled([firstJson(CAL_THIS),firstJson(CAL_NEXT)]);
+  if(w.status!=='fulfilled'||!Array.isArray(w.value))throw new Error('Calendar feed unavailable: '+(w.reason?.message||'bad format'));
+  const raw=[...w.value,...(n.status==='fulfilled'&&Array.isArray(n.value)?n.value:[])];
+  const items=raw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>({title:e.title,currency:e.country||e.currency,impact:/^(high|medium|low)$/i.test(e.impact||'')?e.impact[0].toUpperCase()+e.impact.slice(1).toLowerCase():'Low',timestamp:(d=>isNaN(d)?null:d.toISOString())(new Date(e.date)),forecast:e.forecast||null,previous:e.previous||null,actual:e.actual||null}));
+  const ok=items.filter(e=>e.timestamp).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
+  if(!ok.length)throw new Error('Calendar feed returned no events');
+  return{items:ok,source:'Forex Factory public calendar feed (faireconomy.media). Actuals appear only if the feed supplies them.'}}
+const COT_MK={EUR:'099741',GBP:'096742',JPY:'097741',CHF:'092741',CAD:'090741',AUD:'232741',NZD:'112741',USD:'098662'};
+async function cot(){
+  const codes=Object.values(COT_MK).map(c=>`'${c}'`).join(','),url=`https://publicreporting.cftc.gov/resource/6dca-aqww.json?$where=${encodeURIComponent(`cftc_contract_market_code in(${codes})`)}&$order=${encodeURIComponent('report_date_as_yyyy_mm_dd DESC')}&$limit=64`;
+  const rows=JSON.parse(await getText(url,{headers:{'User-Agent':UA,Accept:'application/json'}},3));
+  if(!Array.isArray(rows)||!rows.length)throw new Error('CFTC returned no rows');
+  const n=x=>x==null||x===''?NaN:+String(x).replace(/,/g,''),by={},pick=(r,...k)=>{for(const f of k)if(r[f]!=null)return n(r[f]);return NaN};
+  for(const r of rows){const k=Object.keys(COT_MK).find(c=>COT_MK[c]===String(r.cftc_contract_market_code).trim());if(k)(by[k]??=[]).push(r)}
+  const data={},net=r=>pick(r,'noncomm_positions_long_all','lev_money_positions_long_all','lev_money_positions_long')-pick(r,'noncomm_positions_short_all','lev_money_positions_short_all','lev_money_positions_short');
+  for(const[k,rs]of Object.entries(by)){rs.sort((a,b)=>String(b.report_date_as_yyyy_mm_dd).localeCompare(String(a.report_date_as_yyyy_mm_dd)));const r=rs[0],pv=rs[1],L=pick(r,'noncomm_positions_long_all','lev_money_positions_long_all','lev_money_positions_long'),S=pick(r,'noncomm_positions_short_all','lev_money_positions_short_all','lev_money_positions_short'),oi=pick(r,'open_interest_all');
+    if(isNaN(L)||isNaN(S))continue;let ch=pick(r,'change_in_noncomm_long_all','change_in_lev_money_long_all','change_in_lev_money_long')-pick(r,'change_in_noncomm_short_all','change_in_lev_money_short_all','change_in_lev_money_short');
+    if(isNaN(ch)&&pv)ch=net(r)-net(pv);
+    data[k]={date:String(r.report_date_as_yyyy_mm_dd).slice(0,10),long:L,short:S,net:L-S,change:isNaN(ch)?null:ch,oi:isNaN(oi)?null:oi,market:r.market_and_exchange_names||null}}
+  if(!Object.keys(data).length)throw new Error('CFTC fields not recognised');
+  return{data,missing:Object.keys(COT_MK).filter(k=>!data[k]),source:'CFTC Commitments of Traders (futures only). Net = non-commercial long − short; weekly change vs prior report. USD = ICE US Dollar Index. Published Fridays for Tuesday positions.'}}
 // ---- HTTP
 const send=(res,code,body,type='application/json')=>{res.writeHead(code,{'Content-Type':type});res.end(typeof body==='string'?body:JSON.stringify(body))};
 http.createServer(async(req,res)=>{
@@ -182,6 +207,8 @@ http.createServer(async(req,res)=>{
     if(p==='/api/history')return send(res,200,await cached('h',36e5,ecb));
     if(p==='/api/dashboard')return send(res,200,await cached('d',3e5,dashboard));
     if(p==='/api/fundamentals')return send(res,200,await cached('f',18e5,fundamentals));
+    if(p==='/api/calendar')return send(res,200,await cached('c',18e5,calendar));
+    if(p==='/api/cot')return send(res,200,await cached('cot',432e5,cot));
     if(p==='/api/news'){if(!news.length)await firstPoll.catch(()=>{});return send(res,200,{items:news.filter(n=>!noise(n.title,n.summary)).map(present),lastPoll,cacheSeconds:900})}
     if(p==='/api/news/status')return send(res,200,{count:news.length,high:news.filter(n=>n.impact==='HIGH').length,lastPoll,clients:clients.size});
     if(p==='/api/news/stream'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache',Connection:'keep-alive'});res.write(': connected\n\n');clients.add(res);const hb=setInterval(()=>res.write(': hb\n\n'),25000);return req.on('close',()=>{clearInterval(hb);clients.delete(res)})}

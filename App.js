@@ -84,12 +84,14 @@ function Fundamentals({fx,sc}){
       <Row style={{marginTop:8}}><T c={col(sc[c].s)} w='700'>Score {f2(sc[c].s)} <T c={C.mut} s={11}>({sc[c].n}/5 inputs)</T></T><TouchableOpacity onPress={()=>Linking.openURL(BANKS[c][1])}><T c={C.ac} s={12}>Meeting calendar ↗</T></TouchableOpacity></Row></Card>})}
   </>;
 }
-function Scanner({A,sc}){
+function Scanner({A,sc,fx,cot,send}){
+  const [deep,setDeep]=useState(null);
   if(!A)return<Wait/>;
-  return<><Note>Reference prices are ECB daily rates ({A.date}), not live quotes. Ranked by |score gap|. LONG/SHORT when gap beyond ±1.</Note>
-    {pairRows(A,sc).map(p=><Card key={p.name} style={{padding:10,marginBottom:8}}>
+  return<><Note>Reference prices are ECB daily rates ({A.date}), not live quotes. Ranked by |score gap|. LONG/SHORT when gap beyond ±1. Tap a pair for the deep-dive.</Note>
+    {pairRows(A,sc).map(p=><TouchableOpacity key={p.name} onPress={()=>setDeep(p)}><Card style={{padding:10,marginBottom:8}}>
       <Row><T w='700' s={16}>{p.b}/{p.q}</T><T c={col(p.gap)} w='700'>{p.lab}</T><T c={col(p.gap)}>gap {f2(p.gap)}</T></Row>
-      <Row style={{marginTop:4}}><T c={C.mut} s={12}>Ref {f2(p.price,p.q==='JPY'?3:5)}</T><T c={col(p.d1)} s={12}>1D {pct(p.d1)}</T><T c={col(p.m1)} s={12}>1M {pct(p.m1)}</T><T c={p.comp<.6?C.dn:C.up} s={12}>Data {Math.round(p.comp*100)}%</T></Row></Card>)}</>;
+      <Row style={{marginTop:4}}><T c={C.mut} s={12}>Ref {f2(p.price,p.q==='JPY'?3:5)}</T><T c={col(p.d1)} s={12}>1D {pct(p.d1)}</T><T c={col(p.m1)} s={12}>1M {pct(p.m1)}</T><T c={p.comp<.6?C.dn:C.up} s={12}>Data {Math.round(p.comp*100)}%</T></Row></Card></TouchableOpacity>)}
+    {deep&&<PairModal p={deep} A={A} sc={sc} fx={fx} cot={cot} send={o=>{setDeep(null);send(o)}} onClose={()=>setDeep(null)}/>}</>;
 }
 function Macro({d}){
   if(!d)return<Wait/>;const F=d.fred||{},B=d.bls||{};
@@ -178,11 +180,11 @@ function News({news,trades}){
     {asset&&<Row style={{marginBottom:10}}><T c={C.mut} s={13}>Showing <T w='700'>{L.length}</T> stories tagged <T w='700'>{asset}</T></T><Btn t='Clear ✕' on={()=>setAsset(null)} style={{paddingVertical:5}}/></Row>}
     <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{main}{side}</View><Reader n={sel} onClose={()=>setSel(null)}/></>;
 }
-function Risk(){
-  const [v,setV]=useState({bal:'10000',risk:'1',entry:'',stop:'',target:'',pip:'10',size:'0.0001'});const u=k=>x=>setV({...v,[k]:x});
+function Risk({pre}){
+  const [v,setV]=useState({bal:'10000',risk:'1',entry:'',stop:'',target:'',pip:'10',size:'0.0001'});const u=k=>x=>setV({...v,[k]:x});useEffect(()=>{if(pre)setV(x=>({...x,entry:String(pre.entry),size:String(pre.size),stop:'',target:''}))},[pre?.n]);
   const n=k=>parseFloat(v[k]),ok=['bal','risk','entry','stop','pip','size'].every(k=>!isNaN(n(k)));
   const sp=ok?Math.abs(n('entry')-n('stop'))/n('size'):null,cash=ok?n('bal')*n('risk')/100:null,lots=ok&&sp>0?cash/(sp*n('pip')):null,rr=!isNaN(n('target'))&&ok&&sp>0?Math.abs(n('target')-n('entry'))/Math.abs(n('entry')-n('stop')):null;
-  return<Card title="Position size">
+  return<Card title={'Position size'+(pre?.pair?' · '+pre.pair:'')}>
     <Row style={{marginBottom:8}}><Inp label='Balance' v={v.bal} set={u('bal')}/><Inp label='Risk %' v={v.risk} set={u('risk')}/></Row>
     <Row style={{marginBottom:8}}><Inp label='Entry' v={v.entry} set={u('entry')}/><Inp label='Stop' v={v.stop} set={u('stop')}/><Inp label='Target' v={v.target} set={u('target')}/></Row>
     <Row style={{marginBottom:12}}><Inp label='Pip value / lot (acct ccy)' v={v.pip} set={u('pip')}/><Inp label='Pip size (JPY 0.01)' v={v.size} set={u('size')}/></Row>
@@ -204,37 +206,117 @@ function Journal({trades,setTrades}){
   </>;
 }
 
+// ---------- time / sessions (IST)
+// ==SESS-START
+const IST=5.5*36e5,p2=n=>String(n).padStart(2,'0');
+const ist=t=>{const d=new Date(t+IST);return{h:d.getUTCHours(),m:d.getUTCMinutes(),s:d.getUTCSeconds(),wd:d.getUTCDay(),day:d.getUTCDate(),mon:d.getUTCMonth(),md:d.getUTCHours()*60+d.getUTCMinutes()}};
+const SESS=[['Tokyo',330,870],['London',810,1350],['New York',1110,210]];
+const inR=(m,s,e)=>s<e?m>=s&&m<e:m>=s||m<e;
+const closedWk=i=>(i.wd===6&&i.md>=210)||i.wd===0||(i.wd===1&&i.md<210);
+const act=(s,t)=>{const i=ist(t);return!closedWk(i)&&inR(i.md,s[1],s[2])};
+const nextOpen=t=>{const t0=Math.floor(t/6e4)*6e4;for(let k=1;k<=8200;k++){const x=t0+k*6e4;for(const s of SESS)if(act(s,x)&&!act(s,x-6e4))return{name:s[0],t:x}}return null};
+const fmtCd=ms=>{const s=Math.max(0,Math.floor(ms/1e3)),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}d ${p2(h)}h`:h?`${p2(h)}h ${p2(m)}m`:`${p2(m)}m ${p2(s%60)}s`};
+const hm=m=>`${p2(Math.floor(m/60))}:${p2(m%60)}`;
+// ==SESS-END
+const useNow=()=>{const [t,setT]=useState(Date.now());useEffect(()=>{const i=setInterval(()=>setT(Date.now()),1000);return()=>clearInterval(i)},[]);return t};
+function SessionBar(){
+  const now=useNow(),i=ist(now),mk=Math.floor(now/6e4),no=useMemo(()=>nextOpen(mk*6e4),[mk]),on=SESS.map(s=>act(s,now)),ov=on[1]&&on[2];
+  const Pl=({t,live,hi})=><View style={{flexDirection:'row',alignItems:'center',borderWidth:1,borderColor:live?C.up:C.line,backgroundColor:hi&&live?'#14532d':'transparent',borderRadius:12,paddingHorizontal:8,paddingVertical:2,marginRight:6,marginVertical:2}}><View style={{width:7,height:7,borderRadius:4,backgroundColor:live?C.up:C.mut,marginRight:5}}/><T s={10} w='700' c={live?C.up:C.mut}>{t}</T></View>;
+  return<View style={{flexDirection:'row',flexWrap:'wrap',alignItems:'center',paddingHorizontal:14,paddingVertical:5,backgroundColor:'#0d1636',borderBottomWidth:1,borderBottomColor:C.line}}>
+    <T s={13} w='800' style={{marginRight:10}}>{p2(i.h)}:{p2(i.m)}:{p2(i.s)} IST</T>
+    {SESS.map((s,k)=><Pl key={s[0]} live={on[k]} t={`${s[0]} ${hm(s[1])}–${hm(s[2])} ${on[k]?'OPEN':'CLOSED'}`}/>)}
+    <Pl hi live={ov} t={`London–NY overlap 18:30–22:30 ${ov?'ACTIVE':'—'}`}/>
+    {!!no&&<T c={C.mut} s={11}>{closedWk(i)?'Weekend · ':''}Next open: <T s={11} w='700'>{no.name}</T> in {fmtCd(no.t-now)}</T>}</View>}
+function NextHigh({cal}){
+  const now=useNow();if(!cal)return null;
+  const nx=(cal.items||[]).filter(e=>e.impact==='High'&&new Date(e.timestamp)>now)[0];
+  return<View style={{backgroundColor:'#3b0d0d',borderWidth:1,borderColor:'#7f1d1d',borderRadius:10,padding:10,marginBottom:12}}>
+    {nx?<T s={13} w='700'>🔴 Next High-Impact: {nx.currency} {nx.title} in {fmtCd(new Date(nx.timestamp)-now)} <T c='#fecaca' w='400' s={12}>· Forecast {nx.forecast||'–'} vs Prev {nx.previous||'–'}</T></T>:<T c={C.mut} s={13}>No further high-impact releases on this week's calendar.</T>}</View>}
+const MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'],WD=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const num=s=>{if(s==null||s==='')return NaN;const m=String(s).trim().match(/^(-?[\d.,]+)\s*([KMBT%]?)/i);if(!m)return NaN;return parseFloat(m[1].replace(/,/g,''))*({K:1e3,M:1e6,B:1e9,T:1e12}[m[2].toUpperCase()]||1)};
+const verdict=e=>{const a=num(e.actual),f=num(e.forecast);if(isNaN(a)||isNaN(f)||a===f)return 0;return((a>f)!==/unemployment|jobless|claims|deficit/i.test(e.title))?1:-1};
+function EconCalendar({cal}){
+  const [cur,setCur]=useState('ALL'),[imp,setImp]=useState('ALL'),now=useNow();
+  if(!cal)return<Wait/>;
+  const L=(cal.items||[]).filter(e=>(cur==='ALL'||e.currency===cur)&&(imp==='ALL'||e.impact===imp)),days={};
+  L.forEach(e=>{const d=ist(new Date(e.timestamp).getTime()),k=`${WD[d.wd]} ${d.day} ${MN[d.mon]}`;(days[k]??=[]).push(e)});
+  const dc={High:C.dn,Medium:'#f59e0b',Low:C.mut};
+  return<><T s={24} w='800'>Economic calendar</T><Note>All times in IST (Asia/Kolkata). {cal.source} Actual is green if better than forecast, red if worse (for unemployment, claims and deficits lower is better).{cal.stale?' Showing stale cache.':''}</Note>
+    <Pills opts={[['ALL','All'],...MAJ.map(c=>[c,c])]} val={cur} set={setCur}/>
+    <Pills opts={[['ALL','All'],['High','🔴 High Impact'],['Medium','🟠 Medium Impact']]} val={imp} set={setImp}/>
+    {!L.length&&<Card><T c={C.mut}>No events match these filters.</T></Card>}
+    {Object.entries(days).map(([day,ev])=><Card key={day} title={day}>
+      <Row style={{paddingBottom:4}}><T c={C.mut} s={10} style={{width:48}}>IST</T><T c={C.mut} s={10} style={{flex:1}}>EVENT</T><View style={{width:156,flexDirection:'row'}}>{['ACTUAL','FCST','PREV'].map(h=><T key={h} c={C.mut} s={10} style={{flex:1,textAlign:'right'}}>{h}</T>)}</View></Row>
+      {ev.map((e,i)=>{const d=ist(new Date(e.timestamp).getTime()),past=new Date(e.timestamp)<now,v=verdict(e);
+        return<Row key={i} style={{alignItems:'flex-start',paddingVertical:9,borderTopWidth:1,borderTopColor:C.line,opacity:past?.7:1}}>
+          <T s={13} w='700' style={{width:48}}>{p2(d.h)}:{p2(d.m)}</T>
+          <View style={{flex:1,paddingRight:6}}><Row style={{justifyContent:'flex-start'}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc[e.impact],marginRight:6}}/><T c={C.ac} s={12} w='800'>{e.currency}</T></Row><T s={13}>{e.title}</T></View>
+          <View style={{width:156,flexDirection:'row'}}><T s={12} w='800' c={v>0?C.up:v<0?C.dn:C.tx} style={{flex:1,textAlign:'right'}}>{e.actual||'—'}</T><T s={12} style={{flex:1,textAlign:'right'}}>{e.forecast||'—'}</T><T s={12} c={C.mut} style={{flex:1,textAlign:'right'}}>{e.previous||'—'}</T></View></Row>})}</Card>)}</>}
+function LineChart({data,color,h=140}){
+  const [w,setW]=useState(0),lo=Math.min(...data),hi=Math.max(...data),X=i=>i*(w/(data.length-1)),Y=v=>h-6-(v-lo)/((hi-lo)||1)*(h-12);
+  return<View onLayout={e=>setW(e.nativeEvent.layout.width)} style={{height:h,backgroundColor:C.bg,borderRadius:8,overflow:'hidden',borderWidth:1,borderColor:C.line}}>
+    {w>0&&data.slice(1).map((v,i)=>{const x1=X(i),y1=Y(data[i]),x2=X(i+1),y2=Y(v),len=Math.hypot(x2-x1,y2-y1);return<View key={i} style={{position:'absolute',left:(x1+x2)/2-len/2,top:(y1+y2)/2-1,width:len+1,height:2,backgroundColor:color,transform:[{rotate:`${Math.atan2(y2-y1,x2-x1)}rad`}]}}/>})}</View>}
+function PairModal({p,A,sc,fx,cot,send,onClose}){
+  const {width}=useWindowDimensions(),wide=width>=900,b=p.b,q=p.q,D=fx?.data||{},K=cot?.data||{},ser=A.series(b,q),dp=q==='JPY'?3:5,jpy=b==='JPY'||q==='JPY';
+  const perf=[['1D',1],['1W',5],['1M',21],['3M',63]].map(([l,k])=>[l,A.chg(b,q,k)]),up=ser[ser.length-1]>=ser[0];
+  const FR=[['Policy rate %',c=>D[c]?.rate?.value],['CPI y/y %',c=>D[c]?.cpi?.value],['GDP y/y %',c=>D[c]?.gdp?.value],['Unemployment %',c=>D[c]?.unemp?.value],['Stance (-2..+2)',c=>D[c]?.stance?.value],['Composite score',c=>sc[c].s]];
+  const ok=x=>x!=null&&!isNaN(x),cb=K[b],cq=K[q],pB=cb&&cb.oi?cb.net/cb.oi*100:null,pQ=cq&&cq.oi?cq.net/cq.oi*100:null,gapC=ok(pB)&&ok(pQ)?pB-pQ:null;
+  const verdictC=p.lab==='NEUTRAL'?['Fundamental bias is neutral, so there is no alignment to test.',C.mut]:gapC==null?['COT data unavailable for one or both currencies.',C.mut]:Math.sign(gapC)===Math.sign(p.gap)?[`✓ Aligned: institutions are net-longer ${gapC>0?b:q} relative to ${gapC>0?q:b}, matching the ${p.lab} fundamental bias.`,C.up]:[`✗ Diverging: institutions are net-longer ${gapC>0?b:q}, against the ${p.lab} fundamental bias.`,C.dn];
+  const Cell=({children,c,w=1,al='right',b:bold})=><T s={13} c={c} w={bold?'700':'400'} style={{flex:w,textAlign:al}}>{children}</T>;
+  const n0=x=>x==null?'n/a':Math.round(x).toLocaleString('en-US');
+  return<Modal transparent animationType='slide' visible onRequestClose={onClose}><View style={{flex:1,backgroundColor:'rgba(0,0,0,.6)',alignItems:'flex-end'}}>
+    <TouchableOpacity activeOpacity={1} onPress={onClose} style={{position:'absolute',top:0,left:0,right:0,bottom:0}}/>
+    <View style={{width:wide?560:'100%',height:'100%',backgroundColor:C.bg,borderLeftWidth:1,borderLeftColor:C.line,paddingTop:Platform.OS==='android'?28:8}}>
+      <Row style={{padding:12}}><T s={20} w='800'>{b}/{q} <T c={col(p.gap)} s={14}>{p.lab}</T></T><TouchableOpacity onPress={onClose}><T s={20}>✕</T></TouchableOpacity></Row>
+      <ScrollView contentContainerStyle={{padding:16,paddingTop:0}}>
+        <Card title='60-day price (ECB daily reference)'><T s={24} w='800'>{f2(p.price,dp)}</T><View style={{marginVertical:8}}><LineChart data={ser} color={up?C.up:C.dn}/></View>
+          <Row><T c={C.mut} s={11}>60d low {f2(Math.min(...ser),dp)}</T><T c={C.mut} s={11}>60d high {f2(Math.max(...ser),dp)}</T></Row>
+          <Row style={{marginTop:10}}>{perf.map(([l,v])=><View key={l} style={{alignItems:'center',flex:1}}><T c={C.mut} s={11}>{l}</T><T c={col(v)} w='700'>{pct(v)}</T></View>)}</Row></Card>
+        <Card title='Fundamentals & rate differential'>
+          <Row style={{marginBottom:6}}><Cell al='left' w={1.6} c={C.mut}> </Cell><Cell c={C.mut} b>{b}</Cell><Cell c={C.mut} b>{q}</Cell><Cell c={C.mut} b>Diff</Cell></Row>
+          {FR.map(([l,fn])=>{const x=fn(b),y=fn(q),d=ok(x)&&ok(y)?x-y:null;return<Row key={l} style={{paddingVertical:4,borderTopWidth:1,borderTopColor:C.line}}><Cell al='left' w={1.6} c={C.mut}>{l}</Cell><Cell>{ok(x)?f2(x):'n/a'}</Cell><Cell>{ok(y)?f2(y):'n/a'}</Cell><Cell c={col(d)} b>{d==null?'–':(d>0?'+':'')+f2(d)}</Cell></Row>})}
+          <T c={C.mut} s={10} style={{marginTop:6}}>Stance is a rule-based proxy from the recent policy-rate change. Scores are research aids, not trade signals.</T></Card>
+        <Card title='Institutional positioning (CFTC COT, non-commercial)'>
+          {!cot?<T c={C.mut}>COT data not loaded yet — pull to refresh.</T>:<>
+          <Row style={{marginBottom:6}}><Cell al='left' w={1.6} c={C.mut}> </Cell><Cell c={C.mut} b>{b}{b==='USD'?' (DXY)':''}</Cell><Cell c={C.mut} b>{q}{q==='USD'?' (DXY)':''}</Cell></Row>
+          {[['Net contracts',x=>n0(x?.net)],['Weekly change',x=>x?.change==null?'n/a':(x.change>0?'+':'')+n0(x.change)],['Net % of open interest',x=>x&&x.oi?f2(x.net/x.oi*100,1)+'%':'n/a'],['Report date',x=>x?.date||'n/a']].map(([l,fn])=><Row key={l} style={{paddingVertical:4,borderTopWidth:1,borderTopColor:C.line}}><Cell al='left' w={1.6} c={C.mut}>{l}</Cell><Cell c={l==='Net contracts'&&cb?col(cb.net):undefined}>{fn(cb)}</Cell><Cell c={l==='Net contracts'&&cq?col(cq.net):undefined}>{fn(cq)}</Cell></Row>)}
+          <T s={13} c={verdictC[1]} w='700' style={{marginTop:10}}>{verdictC[0]}</T></>}
+          <T c={C.mut} s={10} style={{marginTop:6}}>Weekly report published Fridays (positions as of Tuesday). Positioning is context, not a signal.</T></Card>
+        <Btn primary t='Send to Risk Calculator →' on={()=>send({pair:b+q,entry:f2(p.price,dp),size:jpy?'0.01':'0.0001'})} style={{alignSelf:'flex-start'}}/>
+      </ScrollView></View></View></Modal>}
 // ---------- app shell
-const NAV=[['Analysis',[[0,'Daily brief','◐'],[1,'Fundamentals','◎'],[2,'Currency pairs','⇄'],[3,'Macro & rates','▤']]],['Market',[[4,'News','☰']]],['Tools',[[5,'Risk calculator','▣'],[6,'Trade journal','✎']]]];
-const TABS=['Brief','Scores','Pairs','Macro','News','Risk','Journal'];
+const NAV=[['Analysis',[[0,'Daily brief','◐'],[1,'Fundamentals','◎'],[2,'Currency pairs','⇄'],[3,'Macro & rates','▤']]],['Market',[[4,'News','☰'],[7,'Economic calendar','◷']]],['Tools',[[5,'Risk calculator','▣'],[6,'Trade journal','✎']]]];
+const TABS=[['Brief',0],['Scores',1],['Pairs',2],['Macro',3],['News',4],['Cal',7],['Risk',5],['Journal',6]];
 export default function App(){
   const {width}=useWindowDimensions(),wide=width>=900;
-  const [tab,setTab]=useState(0),[hist,setHist]=useState(null),[dash,setDash]=useState(null),[fx,setFx]=useState(null),[news,setNews]=useState([]),[conn,setConn]=useState('…'),[busy,setBusy]=useState(false),[trades,setTrades]=useState([]);
+  const [tab,setTab]=useState(0),[hist,setHist]=useState(null),[dash,setDash]=useState(null),[fx,setFx]=useState(null),[cal,setCal]=useState(null),[cot,setCot]=useState(null),[news,setNews]=useState([]),[conn,setConn]=useState('…'),[busy,setBusy]=useState(false),[trades,setTrades]=useState([]),[pre,setPre]=useState(null);
   const seen=useRef(null);
   const loadNews=async()=>{
     try{const r=await fetch(API+'/api/news');if(!r.ok)throw 0;const items=(await r.json()).items||[];
       if(seen.current)items.filter(i=>i.impact==='HIGH'&&!seen.current.has(i.id)).slice(0,3).forEach(i=>Notifications.scheduleNotificationAsync({content:{title:'HIGH impact · '+i.cur.join('/'),body:i.title},trigger:null}).catch(()=>{}));
       seen.current=new Set([...(seen.current||[]),...items.map(i=>i.id)]);setNews(items);store.set('news',items);return true}
     catch{const c=await store.get('news',[]);setNews(c);return false}};
-  const refresh=async()=>{setBusy(true);const ok=await Promise.all([load('/api/history','hist',setHist),load('/api/dashboard','dash',setDash),load('/api/fundamentals','fx',setFx),loadNews()]);setConn(ok.every(Boolean)?'LIVE':ok.some(Boolean)?'PARTIAL':'OFFLINE · cached');setBusy(false)};
+  const refresh=async()=>{setBusy(true);const ok=await Promise.all([load('/api/history','hist',setHist),load('/api/dashboard','dash',setDash),load('/api/fundamentals','fx',setFx),load('/api/calendar','cal',setCal),load('/api/cot','cot',setCot),loadNews()]);setConn(ok.every(Boolean)?'LIVE':ok.some(Boolean)?'PARTIAL':'OFFLINE · cached');setBusy(false)};
   useEffect(()=>{(async()=>{setTrades(await store.get('trades',[]));
     if(Platform.OS!=='web'){try{await Notifications.setNotificationChannelAsync('news',{name:'High-impact news',importance:Notifications.AndroidImportance.HIGH});await Notifications.requestPermissionsAsync()}catch{}}
-    refresh()})();const i=setInterval(loadNews,30000);return()=>clearInterval(i)},[]);
+    refresh()})();const i=setInterval(loadNews,30000),j=setInterval(()=>load('/api/calendar','cal',setCal),3e5);return()=>{clearInterval(i);clearInterval(j)}},[]);
   const fund=useMemo(()=>{const o={};CUR.forEach(c=>{const d=fx?.data?.[c]||{};o[c]={stance:d.stance?.value,rate:d.rate?.value,gdp:d.gdp?.value,unemp:d.unemp?.value}});return o},[fx]);
   const A=useMemo(()=>analytics(hist),[hist]),sc=useMemo(()=>scores(fund,A),[fund,A]);
+  const send=o=>{setPre({...o,n:Date.now()});setTab(5)};
   const dot=conn==='LIVE'?C.up:conn.startsWith('OFF')?C.dn:'#f59e0b';
   const status=<Row style={{justifyContent:'flex-start'}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dot,marginRight:6}}/><T c={C.mut} s={11}>{conn}</T></Row>;
   const body=<ScrollView style={{flex:1}} contentContainerStyle={{padding:wide?24:12,maxWidth:1100,width:'100%',alignSelf:'center'}} keyboardShouldPersistTaps='handled' refreshControl={<RefreshControl refreshing={busy} onRefresh={refresh} tintColor={C.ac} colors={[C.ac]}/>}>
-    {tab===0&&<Overview A={A} sc={sc} fund={fund}/>}{tab===1&&<Fundamentals fx={fx} sc={sc}/>}{tab===2&&<Scanner A={A} sc={sc}/>}{tab===3&&<Macro d={dash}/>}{tab===4&&<News news={news} trades={trades}/>}{tab===5&&<Risk/>}{tab===6&&<Journal trades={trades} setTrades={setTrades}/>}</ScrollView>;
+    {(tab===0||tab===4)&&<NextHigh cal={cal}/>}
+    {tab===0&&<Overview A={A} sc={sc} fund={fund}/>}{tab===1&&<Fundamentals fx={fx} sc={sc}/>}{tab===2&&<Scanner A={A} sc={sc} fx={fx} cot={cot} send={send}/>}{tab===3&&<Macro d={dash}/>}{tab===4&&<News news={news} trades={trades}/>}{tab===5&&<Risk pre={pre}/>}{tab===6&&<Journal trades={trades} setTrades={setTrades}/>}{tab===7&&<EconCalendar cal={cal}/>}</ScrollView>;
   const warn=<T c='#f59e0b' s={10} style={{paddingHorizontal:wide?24:14,paddingVertical:6}}>ECB data = daily reference rates, not live quotes · Scores are research aids, not trade signals.</T>;
   if(wide)return<View style={{flex:1,flexDirection:'row',backgroundColor:C.bg}}>
     <View style={{width:250,backgroundColor:'#070d20',borderRightWidth:1,borderRightColor:C.line,padding:14}}>
       <T s={16} w='800' style={{marginBottom:18}}>FX Fundamentals <T c={C.ac}>Pro</T></T>
       {NAV.map(([sec,items])=><View key={sec} style={{marginBottom:14}}><T c={C.mut} s={11} w='700' style={{marginBottom:6}}>{sec}</T>{items.map(([i,l,g])=><TouchableOpacity key={i} onPress={()=>setTab(i)} style={{flexDirection:'row',padding:10,borderRadius:8,backgroundColor:tab===i?C.card:'transparent'}}><T c={tab===i?C.ac:C.mut} style={{width:24}}>{g}</T><T c={tab===i?C.tx:C.mut} w={tab===i?'700':'400'}>{l}</T></TouchableOpacity>)}</View>)}
       <View style={{flex:1}}/>{status}</View>
-    <View style={{flex:1}}><Row style={{borderBottomWidth:1,borderBottomColor:C.line,paddingRight:24}}>{warn}<Btn t={busy?'Refreshing…':'Refresh'} on={refresh} style={{paddingVertical:6}}/></Row>{body}</View></View>;
+    <View style={{flex:1}}><SessionBar/><Row style={{borderBottomWidth:1,borderBottomColor:C.line,paddingRight:24}}>{warn}<Btn t={busy?'Refreshing…':'Refresh'} on={refresh} style={{paddingVertical:6}}/></Row>{body}</View></View>;
   return<View style={{flex:1,backgroundColor:C.bg,paddingTop:Platform.OS==='android'?(StatusBar.currentHeight||24):8}}>
     <StatusBar barStyle='light-content' backgroundColor={C.bg}/>
-    <Row style={{paddingHorizontal:14,paddingBottom:2}}><T s={18} w='800'>FX Fundamentals <T c={C.ac}>Pro</T></T>{status}</Row>{warn}{body}
-    <Row style={{backgroundColor:C.card,borderTopWidth:1,borderTopColor:C.line,paddingBottom:10}}>{TABS.map((t,i)=><TouchableOpacity key={t} onPress={()=>setTab(i)} style={{flex:1,alignItems:'center',paddingVertical:12}}><T s={10} w='700' c={tab===i?C.ac:C.mut}>{t}</T></TouchableOpacity>)}</Row></View>;
+    <Row style={{paddingHorizontal:14,paddingBottom:4}}><T s={18} w='800'>FX Fundamentals <T c={C.ac}>Pro</T></T>{status}</Row><SessionBar/>{warn}{body}
+    <Row style={{backgroundColor:C.card,borderTopWidth:1,borderTopColor:C.line,paddingBottom:10}}>{TABS.map(([t,i])=><TouchableOpacity key={t} onPress={()=>setTab(i)} style={{flex:1,alignItems:'center',paddingVertical:12}}><T s={9} w='700' c={tab===i?C.ac:C.mut}>{t}</T></TouchableOpacity>)}</Row></View>;
 }

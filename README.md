@@ -20,6 +20,8 @@ EXPO_PUBLIC_API_URL=https://<name>.onrender.com npx expo start
 ## 4. Website
 `npx expo export -p web` → deploy `dist/` as a Render Static Site (add its URL to `ALLOWED_ORIGINS`).
 
+## Update (v8: economic calendar + countdown banner, pair deep-dive with CFTC COT, IST session bar; new endpoints /api/calendar, /api/cot)
+
 ## Update (v7: impact summary card per asset, High/Medium impact sections + filter pills, driver tags)
 
 ## Update (v6: more fundamentals fallbacks incl. Eurostat EA20/EA21, RBA CPI, IMF last resort; sports/entertainment news filter)
