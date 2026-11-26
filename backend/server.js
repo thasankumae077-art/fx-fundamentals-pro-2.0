@@ -51,6 +51,8 @@ const DIRECT=[['https://www.fxstreet.com/rss/news','FXStreet','Top Stories'],['h
 const FEEDS=[['USD','https://www.federalreserve.gov/feeds/press_all.xml','Federal Reserve'],['EUR','https://www.ecb.europa.eu/rss/press.html','ECB'],['GBP','https://www.bankofengland.co.uk/rss/news','Bank of England'],['JPY','https://www.boj.or.jp/en/rss/whatsnew.xml','Bank of Japan'],['CHF','https://www.snb.ch/public/en/rss/pressrel','SNB'],['CAD','https://www.bankofcanada.ca/content_type/press-releases/feed/','Bank of Canada'],['AUD','https://www.rba.gov.au/rss/rss-cb-media-releases.xml','RBA'],['NZD','https://www.rbnz.govt.nz/feeds/news','RBNZ']];
 const HI=/rate decision|rate (hike|cut)|(raises|cuts|holds|lifts|slashes) (interest )?rates?|\bcpi\b|nfp|nonfarm|payrolls|intervention|emergency|fomc|\bmpc\b|surprise/i;
 const MED=/gdp|employment|unemployment|jobs|retail sales|pmi|minutes|speech|governor|powell|lagarde|bailey|ueda|testimony|inflation|central bank/i;
+const SPORT=/\b(football|soccer|cricket|premier league|champions league|onefootball|nfl|nba|mlb|nhl|la liga|serie a|bundesliga|touchdown|quarterback)\b/i,AMBIG=/\b(match(es)?|goals?|transfers?)\b/i,FIN=/\b(forex|fx|currency|currencies|rates?|inflation|cpi|gdp|fed|ecb|boe|boj|snb|rba|yields?|treasur\w*|central bank|bonds?|gold|silver|dollar|euro|yen|sterling|payrolls?|econom\w*|markets?)\b/i;
+const noise=(t,sm='')=>SPORT.test(t+' '+sm)||(AMBIG.test(t)&&!FIN.test(t));
 const triage=t=>HI.test(t)?'HIGH':MED.test(t)?'MEDIUM':'LOW';
 const tone=t=>{const h=/hike|raises? (interest )?rates?|hawkish|higher for longer|hotter|accelerat|surge|\bbeats?\b/i.test(t),d=/\bcuts?\b|dovish|\beases?\b|easing|cools?|slows?|slump|\bmiss(es)?\b|weaker|\bfalls?\b/i.test(t);return h&&!d?'Hawkish':d&&!h?'Dovish':'Neutral'};
 const CURX={USD:/\b(usd|u\.?s\.? dollar|dollar index|greenback|fed\b|federal reserve|fomc|powell|treasur)|(?<!canadian |australian |new zealand |hong kong )\bdollar\b/i,EUR:/\b(eur\b|euro\b|ecb|lagarde|eurozone)/i,GBP:/\b(gbp|sterling|pound|boe\b|bank of england|bailey)/i,JPY:/\b(jpy|yen|boj\b|bank of japan|ueda)/i,CHF:/\b(chf|franc|snb\b|swiss)/i,CAD:/\b(cad\b|loonie|bank of canada|canadian)/i,AUD:/\b(aud\b|aussie|rba\b|australia)/i,NZD:/\b(nzd|kiwi|rbnz|new zealand)/i,XAUUSD:/\b(gold|bullion|xau|xauusd)\b/i,XAGUSD:/\b(silver|xag|xagusd)\b/i};
@@ -90,7 +92,7 @@ async function pollNews(){
   const jobs=[...Q.map(({cat,q,tag})=>({url:`https://news.google.com/rss/search?q=${encodeURIComponent(q+' when:2d')}&hl=en-US&gl=US&ceid=US:en`,cat,tag,src:''})),...DIRECT.map(([url,src,cat,tag])=>({url,src,cat,tag,gen:cat===null})),...FEEDS.map(([cur,url,src])=>({url,src,cat:'Central Banks',tag:cur}))];
   const rs=await Promise.allSettled(jobs.map(async j=>({j,items:parseRss(await getText(j.url,{headers:{'User-Agent':UA}},2),j.src)}))),fresh=[];
   for(const r of rs){if(r.status!=='fulfilled')continue;const{j,items}=r.value;
-    for(const it of items){if(!it.title||Date.now()-new Date(it.time)>7*864e5)continue;
+    for(const it of items){if(!it.title||noise(it.title,it.summary)||Date.now()-new Date(it.time)>7*864e5)continue;
       const text=it.title+' '+it.summary,tags=[...new Set([...(j.tag?[j.tag]:[]),...detectCur(text)])],cat=!j.cat||j.cat==='Top Stories'?classify(text):j.cat;
       if(j.gen&&cat==='Top Stories'&&!tags.length)continue;
       const norm=it.title.toLowerCase().replace(/ - [^-]+$/,'').replace(/[^a-z0-9]/g,''),id=crypto.createHash('md5').update(norm).digest('hex').slice(0,12),ex=idx.get(id);
@@ -127,19 +129,29 @@ async function bisAll(){
     const by={};for(const l of L.slice(1)){const p=csvRow(l),v=parseFloat(p[vi]);if(!isNaN(v))(by[p[ai].split(':')[0].trim()]??=[]).push([iso(p[ti]),v])}
     if(!Object.keys(by).length)throw new Error('no rows');for(const k in by)by[k].sort((x,y)=>x[0].localeCompare(y[0]));return by}catch(e){err=`BIS ${u.split('/')[4]} ${ac.slice(0,6)}: ${e.message}`}}
   throw new Error(err)}
+const IMFC={USD:'USA',EUR:'EURO',GBP:'GBR',JPY:'JPN',CHF:'CHE',CAD:'CAN',AUD:'AUS',NZD:'NZL'},DBN={AUD:'AU',NZD:'NZ'};
+async function imf(ind,code){const j=JSON.parse(await getText(`https://www.imf.org/external/datamapper/api/v1/${ind}/${code}`,{headers:{'User-Agent':UA}},2)),o=j.values?.[ind]?.[code]||{},y=new Date().getFullYear(),ks=Object.keys(o).map(Number).filter(k=>k<=y&&o[k]!=null).sort();if(!ks.length)throw new Error('IMF empty');return ks.map(k=>[`${k}-01-01`,+o[k]])}
+function rbaDate(x){const m=(x||'').trim().match(/^(\d{1,2})[-\/ ]([A-Za-z]{3}|\d{1,2})[-\/ ](\d{4})$/);if(!m)return null;const mo=isNaN(m[2])?MON.findIndex(n=>n.toLowerCase()===m[2].toLowerCase())+1:+m[2];return mo?`${m[3]}-${String(mo).padStart(2,'0')}-${m[1].padStart(2,'0')}`:null}
+async function rbaCpi(){
+  const L=(await getText('https://www.rba.gov.au/statistics/tables/csv/g1-data.csv',{headers:{'User-Agent':UA}},2)).split(/\r?\n/).map(csvRow),
+    sid=L.findIndex(r=>/^series id$/i.test((r[0]||'').trim())),ti=L.findIndex(r=>/^title$/i.test((r[0]||'').trim()));if(sid<0)throw new Error('RBA: Series ID row not found');
+  let col=L[sid].findIndex(x=>x.trim()==='GCPIAGYP');if(col<0&&ti>=0)col=L[ti].findIndex(x=>/all groups/i.test(x)&&/(year|annual)/i.test(x));if(col<0)throw new Error('RBA: year-ended CPI column not found');
+  const o=[];for(const r of L.slice(sid+1)){const d=rbaDate(r[0]),v=parseFloat(r[col]);if(d&&!isNaN(v))o.push([d,v])}if(!o.length)throw new Error('RBA: no rows');return o}
+async function dbn(path){const j=JSON.parse(await getText(`https://api.db.nomics.world/v22/series/${path}?observations=1`,{headers:{'User-Agent':UA}},2)),d=j.series?.docs?.[0];if(!d)throw new Error('DBnomics empty');const o=d.period.map((p,i)=>[iso(p),+d.value[i]]).filter(p=>!isNaN(p[1]));if(!o.length)throw new Error('DBnomics no obs');return o}
 const fresh=p=>Date.now()-new Date(p.at(-1)[0])<400*864e5;
 async function pick(chain,diag,label,need){for(const[src,fn]of chain){try{const p=await fn();if(p?.length&&(!need||fresh(p)))return{pts:p,src};diag.push(`${label} ${src}: ${p?.length?'stale':'empty'}`)}catch(e){diag.push(`${label} ${src}: ${e.message}`)}}return null}
 const POLS={USD:[['FRED DFEDTARU',()=>fredPts('DFEDTARU')],['FRED FEDFUNDS',()=>fredPts('FEDFUNDS')]],EUR:[['ECB DFR',ecbDfr]],GBP:[['BoE Bank Rate',boe]],CAD:[['BoC target rate',()=>boc('V39079')]]};
-const CPIS={USD:[['FRED CPIAUCSL',async()=>yoy(await fredPts('CPIAUCSL'))]],EUR:[['Eurostat HICP',()=>eurostat('prc_hicp_manr','geo=EA&coicop=CP00&unit=RCH_A')]],GBP:[['ONS CPI D7G7',()=>ons('economy/inflationandpriceindices/timeseries/d7g7/mm23')]],CAD:[['BoC CPI index',async()=>yoy(await boc('V41690973'))]]};
-const UNS={USD:[['FRED UNRATE',()=>fredPts('UNRATE')]],EUR:[['Eurostat une_rt_m',()=>eurostat('une_rt_m','geo=EA&s_adj=SA&age=TOTAL&sex=T&unit=PC_ACT')]]};
+const CPIS={USD:[['FRED CPIAUCSL',async()=>yoy(await fredPts('CPIAUCSL'))]],EUR:[['Eurostat HICP',()=>eurostat('prc_hicp_manr','geo=EA&coicop=CP00&unit=RCH_A')]],GBP:[['ONS CPI D7G7',()=>ons('economy/inflationandpriceindices/timeseries/d7g7/mm23')]],CAD:[['BoC CPI index',async()=>yoy(await boc('V41690973'))]],AUD:[['RBA G1 year-ended CPI (quarterly)',rbaCpi]]};
+const UNS={USD:[['FRED UNRATE',()=>fredPts('UNRATE')]],EUR:['EA20','EA21','EA'].map(g=>[`Eurostat une_rt_m ${g}`,()=>eurostat('une_rt_m',`geo=${g}&s_adj=SA&age=TOTAL&sex=T&unit=PC_ACT`)]),GBP:[['ONS MGSX',()=>ons('employmentandlabourmarket/peoplenotinwork/unemployment/timeseries/mgsx/lms')]]};
 const GDPS={USD:[['FRED GDPC1 y/y',async()=>yoy(await fredPts('GDPC1'))]],EUR:[['Eurostat namq_10_gdp',()=>eurostat('namq_10_gdp','geo=EA&unit=CLV_PCH_SM&s_adj=SCA&na_item=B1GQ')]]};
 async function fundamentals(){
   const cur=Object.keys(BIS),diag=[];let bp;const bm=()=>bp??=bisAll();
+  const imfT=(ind,c)=>[['IMF WEO annual estimate (last resort)',()=>imf(ind,IMFC[c])]];
   const chains={
-    rate:c=>[...(POLS[c]||[]),['BIS WS_CBPOL',async()=>{const s=(await bm())[BIS[c]];if(!s)throw new Error('area missing');return s}],...CCs[c].flatMap(k=>['IRSTCI01','IR3TIB01'].map(p=>[`OECD ${p} market-rate proxy`,()=>fredPts(`${p}${k}M156N`)]))],
-    cpi:c=>{const f=FQ[c]||'M';return[...(CPIS[c]||[]),[`FRED ${I3[c]}CPIALL${f}INMEI`,async()=>yoy(await fredPts(`${I3[c]}CPIALL${f}INMEI`))],...CCs[c].map(k=>[`OECD CPALTT01${k}`,()=>fredPts(`CPALTT01${k}${f}659N`)])]},
-    unemp:c=>[...(UNS[c]||[]),...CCs[c].flatMap(k=>['M','Q'].map(f=>[`OECD LRHUTTTT${k}${f}`,()=>fredPts(`LRHUTTTT${k}${f}156S`)]))],
-    gdp:c=>[...(GDPS[c]||[]),...CCs[c].flatMap(k=>[[`OECD NAEXKP01${k} y/y`,()=>fredPts(`NAEXKP01${k}Q659S`)],[`OECD NAEXKP01${k} 4q compounded`,async()=>compound(await fredPts(`NAEXKP01${k}Q657S`))]])]};
+    rate:c=>[...(POLS[c]||[]),['BIS WS_CBPOL',async()=>{const s=(await bm())[BIS[c]];if(!s)throw new Error('area missing');return s}],...CCs[c].flatMap(k=>['IRSTCB01','IRSTCI01','IR3TIB01'].map(p=>[`OECD ${p} rate proxy`,()=>fredPts(`${p}${k}M156N`)]))],
+    cpi:c=>{const f=FQ[c]||'M';return[...(CPIS[c]||[]),...(I3[c]?[[`FRED ${I3[c]}CPIALL${f}INMEI (y/y from index)`,async()=>yoy(await fredPts(`${I3[c]}CPIALL${f}INMEI`))]]:[]),...CCs[c].map(k=>[`OECD CPALTT01${k}`,()=>fredPts(`CPALTT01${k}${f}659N`)]),...(DBN[c]?[['DBnomics IMF/CPI y/y',()=>dbn(`IMF/CPI/Q.${DBN[c]}.PCPI_PC_CP_A_PT`)],['DBnomics IMF/CPI index (y/y)',async()=>yoy(await dbn(`IMF/CPI/Q.${DBN[c]}.PCPI_IX`))]]:[]),...imfT('PCPIPCH',c)]},
+    unemp:c=>[...(UNS[c]||[]),...CCs[c].flatMap(k=>['M','Q'].flatMap(f=>[['LRHUTTTT','156S'],['LRUNTTTT','156S']].map(([p,x])=>[`OECD ${p}${k}${f}`,()=>fredPts(`${p}${k}${f}${x}`)]))),...imfT('LUR',c)],
+    gdp:c=>[...(GDPS[c]||[]),...CCs[c].flatMap(k=>[[`OECD NAEXKP01${k} y/y`,()=>fredPts(`NAEXKP01${k}Q659S`)],[`OECD NAEXKP01${k} 4q compounded`,async()=>compound(await fredPts(`NAEXKP01${k}Q657S`))]]),...imfT('NGDP_RPCH',c)]};
   const val=r=>r&&{value:+r.pts.at(-1)[1].toFixed(2),date:r.pts.at(-1)[0],src:r.src};
   const rows=await Promise.all(cur.map(async c=>{const r=await pick(chains.rate(c),diag,c+' rate',false),o={rate:null,cpi:null,gdp:null,unemp:null};
     const px=r&&r.src.includes('proxy')&&!fresh(r.pts)?null:r;o.rate=val(px);
@@ -165,7 +177,7 @@ http.createServer(async(req,res)=>{
     if(p==='/api/history')return send(res,200,await cached('h',36e5,ecb));
     if(p==='/api/dashboard')return send(res,200,await cached('d',3e5,dashboard));
     if(p==='/api/fundamentals')return send(res,200,await cached('f',18e5,fundamentals));
-    if(p==='/api/news'){if(!news.length)await firstPoll.catch(()=>{});return send(res,200,{items:news.map(present),lastPoll,cacheSeconds:900})}
+    if(p==='/api/news'){if(!news.length)await firstPoll.catch(()=>{});return send(res,200,{items:news.filter(n=>!noise(n.title,n.summary)).map(present),lastPoll,cacheSeconds:900})}
     if(p==='/api/news/status')return send(res,200,{count:news.length,high:news.filter(n=>n.impact==='HIGH').length,lastPoll,clients:clients.size});
     if(p==='/api/news/stream'){res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache',Connection:'keep-alive'});res.write(': connected\n\n');clients.add(res);const hb=setInterval(()=>res.write(': hb\n\n'),25000);return req.on('close',()=>{clearInterval(hb);clients.delete(res)})}
     if(STATIC[p])return send(res,200,fs.readFileSync(path.join(__dirname,'public',STATIC[p])),'text/html; charset=utf-8');

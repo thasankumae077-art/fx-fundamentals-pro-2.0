@@ -20,6 +20,8 @@ EXPO_PUBLIC_API_URL=https://<name>.onrender.com npx expo start
 ## 4. Website
 `npx expo export -p web` → deploy `dist/` as a Render Static Site (add its URL to `ALLOWED_ORIGINS`).
 
+## Update (v6: more fundamentals fallbacks incl. Eurostat EA20/EA21, RBA CPI, IMF last resort; sports/entertainment news filter)
+
 ## Update (v5: asset filter pills (8 FX + XAUUSD, XAGUSD), Google News link resolution + more image feeds, asset-coloured fallback cards)
 
 ## Update (v4: Google-News-style News tab; /api/news now returns imageUrl, category, publishedAt, summary, tone)
