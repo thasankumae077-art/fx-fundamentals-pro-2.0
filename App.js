@@ -1,5 +1,5 @@
 import React,{useState,useEffect,useRef,useMemo} from 'react';
-import {View,Text,ScrollView,TextInput,TouchableOpacity,RefreshControl,Linking,Share,Alert,StatusBar,Platform,Image,useWindowDimensions} from 'react-native';
+import {View,Text,ScrollView,TextInput,TouchableOpacity,RefreshControl,Linking,Share,Alert,StatusBar,Platform,Image,Modal,useWindowDimensions} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
 
@@ -101,20 +101,47 @@ function Macro({d}){
     <Card title="BLS">{R('CPI y/y',B.cpiYoY,'%')}{R('Unemployment',B.unemployment,'%')}{R('Nonfarm payrolls m/m (k)',B.payrollsChange)}</Card>
     {d.stale&&<Note>Showing stale server cache.</Note>}{Object.keys(d.errors||{}).length>0&&<Note>Unavailable upstream: {Object.keys(d.errors).join(', ')}</Note>}</>;
 }
-function News({news}){
-  const [cur,setCur]=useState('ALL'),[imp,setImp]=useState('ALL'),[sel,setSel]=useState(null);
-  const L=news.filter(n=>(cur==='ALL'||n.cur.includes(cur))&&(imp==='ALL'||n.impact===imp)).slice(0,120);
-  const ic={HIGH:C.dn,MEDIUM:'#f59e0b',LOW:C.mut};
-  return<><T s={24} w='800' style={{marginBottom:8}}>News</T>
-    {sel&&<Card style={{borderColor:C.ac}}>
-      {!!sel.img&&<Image source={{uri:sel.img}} style={{width:'100%',height:160,borderRadius:8,marginBottom:10}} resizeMode='cover'/>}
-      <Row style={{justifyContent:'flex-start',marginBottom:6}}><T c={ic[sel.impact]} s={11} w='800' style={{marginRight:8}}>{sel.impact} IMPACT</T><T c={C.ac} s={11}>{sel.cur.join(' ')}</T></Row>
-      <T s={18} w='700'>{sel.title}</T><T c={C.mut} s={11} style={{marginVertical:6}}>{sel.source} · {new Date(sel.time).toLocaleString()}</T>
-      <T s={14}>{sel.summary||'The publisher shares no summary in its feed. Open the full article for the complete text.'}</T>
-      <Row style={{justifyContent:'flex-start',marginTop:10}}><Btn primary t='Read full article ↗' on={()=>Linking.openURL(sel.link)} style={{marginRight:8}}/><Btn t='Close' on={()=>setSel(null)}/></Row></Card>}
-    <Pills opts={[['ALL','All'],...CUR.map(c=>[c,c])]} val={cur} set={setCur}/><Pills opts={['ALL','HIGH','MEDIUM','LOW'].map(x=>[x,x])} val={imp} set={setImp}/>
-    {!L.length&&<Wait/>}
-    {L.map(n=><TouchableOpacity key={n.id} onPress={()=>setSel(n)}><Card style={{padding:10,marginBottom:8}}><Row style={{marginBottom:4,justifyContent:'flex-start'}}><T c={ic[n.impact]} s={10} w='800' style={{marginRight:8}}>{n.impact}</T><T c={C.ac} s={10}>{n.cur.join(' ')}</T></Row><T s={14}>{n.title}</T>{!!n.summary&&<T c={C.mut} s={12} style={{marginTop:3}} >{n.summary.slice(0,140)}…</T>}<T c={C.mut} s={10} style={{marginTop:4}}>{n.source} · {new Date(n.time).toLocaleString()}</T></Card></TouchableOpacity>)}</>;
+const CATS=['Top Stories','Central Banks','Currencies','Macro & Rates'];
+const CATC={'Central Banks':['#1e3a8a','🏛️'],'Currencies':['#065f46','💱'],'Macro & Rates':['#7c2d12','📊'],'Top Stories':['#312e81','📰']};
+const relT=n=>{const t=n.time?new Date(n.time):null;if(!t||isNaN(t))return n.publishedAt||'';const s=(Date.now()-t)/1e3,m=s/60,h=m/60,d=h/24,f=Math.floor;return s<60?'just now':m<60?`${f(m)} min ago`:h<24?`${f(h)} hour${f(h)>1?'s':''} ago`:d<7?`${f(d)} day${f(d)>1?'s':''} ago`:t.toLocaleDateString()};
+function Thumb({n,style,big}){const [bad,setBad]=useState(false),[bg,ic]=CATC[n.category]||CATC['Top Stories'];
+  return n.imageUrl&&!bad?<Image source={{uri:n.imageUrl}} onError={()=>setBad(true)} resizeMode='cover' style={{backgroundColor:C.line,...style}}/>
+    :<View style={{backgroundColor:bg,alignItems:'center',justifyContent:'center',...style}}><Text style={{fontSize:big?44:22}}>{ic}</Text>{big&&<T c='#ffffffaa' s={11} w='700' style={{marginTop:4}}>{(n.category||'').toUpperCase()}</T>}</View>}
+const Badge=({n})=><View style={{flexDirection:'row'}}><View style={{backgroundColor:C.line,borderRadius:4,paddingHorizontal:6,paddingVertical:2}}><T s={10} w='700'>{(n.source||'News').toUpperCase()}</T></View></View>;
+const Chip=({t,c})=><View style={{borderWidth:1,borderColor:c,borderRadius:14,paddingHorizontal:10,paddingVertical:4,marginRight:6,marginBottom:6}}><T c={c} s={12} w='700'>{t}</T></View>;
+function Reader({n,onClose}){
+  const {width}=useWindowDimensions(),wide=width>=900,tc=t=>t==='Hawkish'?C.up:t==='Dovish'?C.dn:C.mut,ic={HIGH:C.dn,MEDIUM:'#f59e0b',LOW:C.mut};if(!n)return null;
+  return<Modal transparent animationType='slide' visible onRequestClose={onClose}><View style={{flex:1,backgroundColor:'rgba(0,0,0,.6)',alignItems:'flex-end'}}>
+    <TouchableOpacity activeOpacity={1} onPress={onClose} style={{position:'absolute',top:0,left:0,right:0,bottom:0}}/>
+    <View style={{width:wide?480:'100%',height:'100%',backgroundColor:C.bg,borderLeftWidth:1,borderLeftColor:C.line,paddingTop:Platform.OS==='android'?28:8}}>
+      <Row style={{padding:12}}><T c={C.mut} s={11} w='700'>ARTICLE</T><TouchableOpacity onPress={onClose}><T s={20}>✕</T></TouchableOpacity></Row>
+      <ScrollView contentContainerStyle={{padding:16,paddingTop:0}}>
+        <Thumb n={n} big style={{width:'100%',height:200,borderRadius:12}}/>
+        <Row style={{justifyContent:'flex-start',marginTop:12}}><Badge n={n}/><T c={C.mut} s={12} style={{marginLeft:8}}>{relT(n)}</T></Row>
+        <T s={22} w='800' style={{marginVertical:10}}>{n.title}</T>
+        <View style={{flexDirection:'row',flexWrap:'wrap'}}>{(n.cur?.length?n.cur:[]).map(c=><Chip key={c} t={`${c} · ${n.tone||'Neutral'}`} c={tc(n.tone)}/>)}<Chip t={`${n.impact} IMPACT`} c={ic[n.impact]}/><Chip t={n.category} c={C.ac}/></View>
+        <T s={15} style={{marginTop:6,lineHeight:22}}>{n.summary||"This publisher's feed doesn't include a summary. Open the full story for the complete article."}</T>
+        <T c={C.mut} s={10} style={{marginTop:10}}>Tone (Hawkish/Dovish/Neutral) and impact are keyword-based labels on the headline, not analysis or a trade signal.</T>
+        <Btn primary t={`Read full story at ${n.source||'publisher'} ↗`} on={()=>Linking.openURL(n.url||n.link)} style={{marginTop:16,alignSelf:'flex-start'}}/>
+      </ScrollView></View></View></Modal>}
+function Side({title,items,pick}){return items.length?<Card title={title}>{items.map(n=><TouchableOpacity key={n.id} onPress={()=>pick(n)}><Row style={{alignItems:'flex-start',paddingVertical:8}}><View style={{flex:1,paddingRight:10}}><T s={13} w='600'>{n.title}</T><T c={C.mut} s={10} style={{marginTop:3}}>{n.source} · {relT(n)}</T></View><Thumb n={n} style={{width:56,height:56,borderRadius:8}}/></Row></TouchableOpacity>)}</Card>:null}
+function News({news,trades}){
+  const {width}=useWindowDimensions(),wide=width>=900,[cat,setCat]=useState('Top Stories'),[sel,setSel]=useState(null);
+  const L=news.filter(n=>cat==='Top Stories'||n.category===cat),lead=L.find(n=>n.imageUrl)||L[0];
+  const sub=lead?L.filter(n=>n.id!==lead.id&&(n.category===lead.category||n.cur?.some(c=>lead.cur?.includes(c)))).slice(0,3):[];
+  const used=new Set([lead?.id,...sub.map(n=>n.id)]),rest=L.filter(n=>!used.has(n.id)).slice(0,40);
+  const hi=news.filter(n=>n.impact==='HIGH'),movers=(hi.length?hi:news).slice(0,8);
+  const mine=new Set(trades.flatMap(t=>[t.pair.slice(0,3),t.pair.slice(3,6)])),picks=mine.size?news.filter(n=>n.cur?.some(c=>mine.has(c))&&!movers.includes(n)).slice(0,5):[];
+  const main=<View style={{flex:1,width:'100%'}}>
+    {!lead&&<Wait/>}
+    {lead&&<Card style={{padding:0,overflow:'hidden'}}><TouchableOpacity activeOpacity={.85} onPress={()=>setSel(lead)}><Thumb n={lead} big style={{width:'100%',height:wide?240:180}}/>
+      <View style={{padding:14}}><Badge n={lead}/><T s={22} w='800' style={{marginTop:8}}>{lead.title}</T><T c={C.mut} s={12} style={{marginTop:4}}>{relT(lead)}</T></View></TouchableOpacity>
+      {sub.map(r=><TouchableOpacity key={r.id} onPress={()=>setSel(r)} style={{borderTopWidth:1,borderTopColor:C.line,paddingHorizontal:14,paddingVertical:10}}><T s={14} w='600'>{r.title}</T><T c={C.mut} s={11} style={{marginTop:2}}>{r.source} · {relT(r)}</T></TouchableOpacity>)}</Card>}
+    {rest.map(n=><TouchableOpacity key={n.id} onPress={()=>setSel(n)}><Row style={{alignItems:'flex-start',paddingVertical:12,borderTopWidth:1,borderTopColor:C.line}}><View style={{flex:1,paddingRight:12}}><Badge n={n}/><T s={15} w='700' style={{marginTop:6}}>{n.title}</T><T c={C.mut} s={11} style={{marginTop:4}}>{relT(n)}{n.impact==='HIGH'?' · HIGH IMPACT':''}</T></View><Thumb n={n} style={{width:92,height:92,borderRadius:12}}/></Row></TouchableOpacity>)}</View>;
+  const side=<View style={{width:wide?320:'100%',marginLeft:wide?20:0,marginTop:wide?0:12}}><Side title='Market movers' items={movers} pick={setSel}/><Side title='Picks for you · from your journal pairs' items={picks} pick={setSel}/></View>;
+  return<><T s={24} w='800'>News</T><Note>Google News searches, FXStreet, CNBC, MarketWatch and central-bank feeds, refreshed every 15 minutes. Tone labels are keyword-based, not advice.</Note>
+    <Pills opts={CATS.map(c=>[c,c])} val={cat} set={setCat}/>
+    <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{main}{side}</View><Reader n={sel} onClose={()=>setSel(null)}/></>;
 }
 function Risk(){
   const [v,setV]=useState({bal:'10000',risk:'1',entry:'',stop:'',target:'',pip:'10',size:'0.0001'});const u=k=>x=>setV({...v,[k]:x});
@@ -163,7 +190,7 @@ export default function App(){
   const dot=conn==='LIVE'?C.up:conn.startsWith('OFF')?C.dn:'#f59e0b';
   const status=<Row style={{justifyContent:'flex-start'}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dot,marginRight:6}}/><T c={C.mut} s={11}>{conn}</T></Row>;
   const body=<ScrollView style={{flex:1}} contentContainerStyle={{padding:wide?24:12,maxWidth:1100,width:'100%',alignSelf:'center'}} keyboardShouldPersistTaps='handled' refreshControl={<RefreshControl refreshing={busy} onRefresh={refresh} tintColor={C.ac} colors={[C.ac]}/>}>
-    {tab===0&&<Overview A={A} sc={sc} fund={fund}/>}{tab===1&&<Fundamentals fx={fx} sc={sc}/>}{tab===2&&<Scanner A={A} sc={sc}/>}{tab===3&&<Macro d={dash}/>}{tab===4&&<News news={news}/>}{tab===5&&<Risk/>}{tab===6&&<Journal trades={trades} setTrades={setTrades}/>}</ScrollView>;
+    {tab===0&&<Overview A={A} sc={sc} fund={fund}/>}{tab===1&&<Fundamentals fx={fx} sc={sc}/>}{tab===2&&<Scanner A={A} sc={sc}/>}{tab===3&&<Macro d={dash}/>}{tab===4&&<News news={news} trades={trades}/>}{tab===5&&<Risk/>}{tab===6&&<Journal trades={trades} setTrades={setTrades}/>}</ScrollView>;
   const warn=<T c='#f59e0b' s={10} style={{paddingHorizontal:wide?24:14,paddingVertical:6}}>ECB data = daily reference rates, not live quotes · Scores are research aids, not trade signals.</T>;
   if(wide)return<View style={{flex:1,flexDirection:'row',backgroundColor:C.bg}}>
     <View style={{width:250,backgroundColor:'#070d20',borderRightWidth:1,borderRightColor:C.line,padding:14}}>

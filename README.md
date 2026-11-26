@@ -20,6 +20,8 @@ EXPO_PUBLIC_API_URL=https://<name>.onrender.com npx expo start
 ## 4. Website
 `npx expo export -p web` → deploy `dist/` as a Render Static Site (add its URL to `ALLOWED_ORIGINS`).
 
+## Update (v4: Google-News-style News tab; /api/news now returns imageUrl, category, publishedAt, summary, tone)
+
 ## Update (v2)
 Replace `App.js` and `backend/server.js` in your GitHub repo and commit; Render redeploys. New endpoint: `GET /api/fundamentals`.
 
