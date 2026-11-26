@@ -125,34 +125,57 @@ function Reader({n,onClose}){
         <Thumb n={n} big style={{width:'100%',height:200,borderRadius:12}}/>
         <Row style={{justifyContent:'flex-start',marginTop:12}}><Badge n={n}/><T c={C.mut} s={12} style={{marginLeft:8}}>{relT(n)}</T></Row>
         <T s={22} w='800' style={{marginVertical:10}}>{n.title}</T>
-        <View style={{flexDirection:'row',flexWrap:'wrap'}}>{(n.cur?.length?n.cur:[]).map(c=><Chip key={c} t={`${c} · ${n.tone||'Neutral'}`} c={tc(n.tone)}/>)}<Chip t={`${n.impact} IMPACT`} c={ic[n.impact]}/><Chip t={n.category} c={C.ac}/></View>
+        <View style={{flexDirection:'row',flexWrap:'wrap'}}>{(n.cur?.length?n.cur:[]).map(c=><Chip key={c} t={`${c} · ${n.tone||'Neutral'}`} c={tc(n.tone)}/>)}<Chip t={`${n.impact} IMPACT`} c={ic[n.impact]}/>{!!n.driver&&<Chip t={n.driver} c={C.ac}/>}<Chip t={n.category} c={C.ac}/></View>
         <T s={15} style={{marginTop:6,lineHeight:22}}>{n.summary||"This publisher's feed doesn't include a summary. Open the full story for the complete article."}</T>
         <T c={C.mut} s={10} style={{marginTop:10}}>Tone (Hawkish/Dovish/Neutral) and impact are keyword-based labels on the headline, not analysis or a trade signal.</T>
         <Btn primary t={`Read full story at ${n.source||'publisher'} ↗`} on={()=>Linking.openURL(n.url||n.link)} style={{marginTop:16,alignSelf:'flex-start'}}/>
       </ScrollView></View></View></Modal>}
 function Side({title,items,pick}){return items.length?<Card title={title}>{items.map(n=><TouchableOpacity key={n.id} onPress={()=>pick(n)}><Row style={{alignItems:'flex-start',paddingVertical:8}}><View style={{flex:1,paddingRight:10}}><T s={13} w='600'>{n.title}</T><T c={C.mut} s={10} style={{marginTop:3}}>{n.source} · {relT(n)}</T></View><Thumb n={n} style={{width:56,height:56,borderRadius:8}}/></Row></TouchableOpacity>)}</Card>:null}
+const IMPC={HIGH:['#7f1d1d','#fecaca','HIGH IMPACT'],MEDIUM:['#78350f','#fde68a','MEDIUM IMPACT']};
+const ImpactTag=({n})=>IMPC[n.impact]?<View style={{flexDirection:'row',alignItems:'center'}}><View style={{backgroundColor:IMPC[n.impact][0],borderRadius:4,paddingHorizontal:6,paddingVertical:2,marginRight:6}}><T s={10} w='800' c={IMPC[n.impact][1]}>{IMPC[n.impact][2]}</T></View>{!!n.driver&&<T c={C.mut} s={11}>{n.driver}</T>}</View>:null;
+function ImpactSummary({asset,news}){
+  const cut=Date.now()-72*36e5,items=news.filter(n=>n.cur?.includes(asset)&&new Date(n.time)>=cut),metal=asset.startsWith('XA'),W={HIGH:3,MEDIUM:2,LOW:1};
+  let net=0,tot=0,up=0,dn=0;
+  items.forEach(n=>{const mv=n.move==='Up'?1:n.move==='Down'?-1:0,tn=n.tone==='Hawkish'?1:n.tone==='Dovish'?-1:0,onMetal=n.cur?.some(c=>c.startsWith('XA')),b=Math.sign(metal?mv:tn+(onMetal?0:mv));net+=W[n.impact]*b;tot+=W[n.impact]*Math.abs(b);if(b>0)up++;if(b<0)dn++});
+  const r=tot?net/tot:0,bias=up+dn<2||Math.abs(r)<.3?'Mixed / Neutral':r>0?(metal?'Bullish':'Bullish / Hawkish'):(metal?'Bearish':'Bearish / Dovish'),bc=bias.startsWith('Bull')?C.up:bias.startsWith('Bear')?C.dn:'#f59e0b';
+  const grp=k=>{const m={};items.filter(n=>n.impact===k&&n.driver).forEach(n=>(m[n.driver]??=[]).push(n));return Object.entries(m).sort((x,y)=>y[1].length-x[1].length).slice(0,3)},hi=grp('HIGH'),md=grp('MEDIUM');
+  const fmt=g=>g.map(([d,x])=>`${d} (${x.length})`).join(' · '),cl=t=>t.length>90?t.slice(0,90)+'…':t;
+  const Bul=({children})=><Row style={{alignItems:'flex-start',justifyContent:'flex-start',marginTop:6}}><T c={C.mut} style={{width:14}}>•</T><T s={13} style={{flex:1}}>{children}</T></Row>;
+  return<Card style={{borderLeftWidth:4,borderLeftColor:bc}}>
+    <Row><T s={17} w='800'>{asset} Impact Summary</T><View style={{borderWidth:1,borderColor:bc,borderRadius:12,paddingHorizontal:10,paddingVertical:3}}><T c={bc} s={12} w='800'>{bias}</T></View></Row>
+    {!items.length?<T c={C.mut} s={13} style={{marginTop:8}}>No {asset} headlines in the last 72 hours.</T>:<>
+      <Bul><T w='700'>🔴 High impact: </T>{hi.length?`${fmt(hi)} — latest “${cl(hi[0][1][0].title)}”`:'no high-impact drivers in the current feed.'}</Bul>
+      <Bul><T w='700'>🟠 Medium impact: </T>{md.length?`${fmt(md)} — latest “${cl(md[0][1][0].title)}”`:'no medium-impact drivers in the current feed.'}</Bul>
+      <Bul><T w='700'>Basis: </T>{up} bullish vs {dn} bearish of {items.length} headlines tagged {asset} (last 72h, impact-weighted).</Bul></>}
+    <T c={C.mut} s={10} style={{marginTop:8}}>Auto-generated from headline keywords — not analysis or a trade signal.</T></Card>}
 function News({news,trades}){
-  const {width}=useWindowDimensions(),wide=width>=900,[cat,setCat]=useState('Top Stories'),[asset,setAsset]=useState(null),[sel,setSel]=useState(null);
-  const L0=news.filter(n=>cat==='Top Stories'||n.category===cat),cnt=x=>L0.filter(n=>n.cur?.includes(x)).length,L=asset?L0.filter(n=>n.cur?.includes(asset)):L0,lead=L.find(n=>n.imageUrl)||L[0];
+  const {width}=useWindowDimensions(),wide=width>=900,[cat,setCat]=useState('Top Stories'),[asset,setAsset]=useState(null),[imp,setImp]=useState('ALL'),[sel,setSel]=useState(null);
+  const inCat=n=>cat==='Top Stories'||n.category===cat,inImp=n=>imp==='ALL'||n.impact===imp,inAsset=n=>!asset||n.cur?.includes(asset);
+  const L=news.filter(n=>inCat(n)&&inImp(n)&&inAsset(n)),cnt=x=>news.filter(n=>inCat(n)&&inImp(n)&&n.cur?.includes(x)).length,impCnt=k=>news.filter(n=>inCat(n)&&inAsset(n)&&(k==='ALL'||n.impact===k)).length;
+  const lead=L.find(n=>n.imageUrl&&n.impact==='HIGH')||L.find(n=>n.imageUrl)||L[0];
   const sub=lead?L.filter(n=>n.id!==lead.id&&(n.category===lead.category||n.cur?.some(c=>lead.cur?.includes(c)))).slice(0,3):[];
-  const used=new Set([lead?.id,...sub.map(n=>n.id)]),rest=L.filter(n=>!used.has(n.id)).slice(0,40);
+  const used=new Set([lead?.id,...sub.map(n=>n.id)]),rest=L.filter(n=>!used.has(n.id)),highs=rest.filter(n=>n.impact==='HIGH').slice(0,30),meds=rest.filter(n=>n.impact==='MEDIUM').slice(0,30),others=imp==='ALL'?rest.filter(n=>n.impact==='LOW').slice(0,20):[];
   const hi=news.filter(n=>n.impact==='HIGH'),movers=(hi.length?hi:news).slice(0,8);
   const mine=new Set(trades.flatMap(t=>[t.pair.slice(0,3),t.pair.slice(3,6),t.pair])),picks=mine.size?news.filter(n=>n.cur?.some(c=>mine.has(c))&&!movers.includes(n)).slice(0,5):[];
+  const story=n=><TouchableOpacity key={n.id} onPress={()=>setSel(n)}><Row style={{alignItems:'flex-start',paddingVertical:12,borderTopWidth:1,borderTopColor:C.line}}><View style={{flex:1,paddingRight:12}}><Row style={{justifyContent:'flex-start',flexWrap:'wrap'}}><View style={{marginRight:8}}><Badge n={n}/></View><ImpactTag n={n}/></Row><T s={15} w='700' style={{marginTop:6}}>{n.title}</T><T c={C.mut} s={11} style={{marginTop:4}}>{relT(n)}</T></View><Thumb n={n} style={{width:92,height:92,borderRadius:12}}/></Row></TouchableOpacity>;
+  const sec=(emoji,title,color,items)=>items.length?<View style={{marginTop:16}}><Row style={{borderLeftWidth:4,borderLeftColor:color,paddingLeft:10}}><T s={17} w='800'>{emoji} {title}</T><T c={C.mut} s={12}>{items.length} stories</T></Row>{items.map(story)}</View>:null;
   const main=<View style={{flex:1,width:'100%'}}>
-    {!lead&&(asset?<Card><T c={C.mut}>No {asset} stories in this category yet — try “Top Stories” or another asset.</T></Card>:<Wait/>)}
+    {!!asset&&<ImpactSummary asset={asset} news={news}/>}
+    {!lead&&(asset||imp!=='ALL'?<Card><T c={C.mut}>No stories match these filters yet — try “All Impact”, “Top Stories” or another asset.</T></Card>:<Wait/>)}
     {lead&&<Card style={{padding:0,overflow:'hidden'}}><TouchableOpacity activeOpacity={.85} onPress={()=>setSel(lead)}><Thumb n={lead} big style={{width:'100%',height:wide?240:180}}/>
-      <View style={{padding:14}}><Badge n={lead}/><T s={22} w='800' style={{marginTop:8}}>{lead.title}</T><T c={C.mut} s={12} style={{marginTop:4}}>{relT(lead)}</T></View></TouchableOpacity>
+      <View style={{padding:14}}><Row style={{justifyContent:'flex-start',flexWrap:'wrap'}}><View style={{marginRight:8}}><Badge n={lead}/></View><ImpactTag n={lead}/></Row><T s={22} w='800' style={{marginTop:8}}>{lead.title}</T><T c={C.mut} s={12} style={{marginTop:4}}>{relT(lead)}</T></View></TouchableOpacity>
       {sub.map(r=><TouchableOpacity key={r.id} onPress={()=>setSel(r)} style={{borderTopWidth:1,borderTopColor:C.line,paddingHorizontal:14,paddingVertical:10}}><T s={14} w='600'>{r.title}</T><T c={C.mut} s={11} style={{marginTop:2}}>{r.source} · {relT(r)}</T></TouchableOpacity>)}</Card>}
-    {rest.map(n=><TouchableOpacity key={n.id} onPress={()=>setSel(n)}><Row style={{alignItems:'flex-start',paddingVertical:12,borderTopWidth:1,borderTopColor:C.line}}><View style={{flex:1,paddingRight:12}}><Badge n={n}/><T s={15} w='700' style={{marginTop:6}}>{n.title}</T><T c={C.mut} s={11} style={{marginTop:4}}>{relT(n)}{n.impact==='HIGH'?' · HIGH IMPACT':''}</T></View><Thumb n={n} style={{width:92,height:92,borderRadius:12}}/></Row></TouchableOpacity>)}</View>;
+    {sec('🔴','High Impact News','#ef4444',highs)}{sec('🟠','Medium Impact News','#f59e0b',meds)}{sec('📰','Other market news',C.mut,others)}</View>;
   const side=<View style={{width:wide?320:'100%',marginLeft:wide?20:0,marginTop:wide?0:12}}><Side title='Market movers' items={movers} pick={setSel}/><Side title='Picks for you · from your journal pairs' items={picks} pick={setSel}/></View>;
-  return<><T s={24} w='800'>News</T><Note>Google News searches, FXStreet, CNBC, MarketWatch and central-bank feeds, refreshed every 15 minutes. Tone labels are keyword-based, not advice.</Note>
+  return<><T s={24} w='800'>News</T><Note>Google News searches, FXStreet, CNBC, MarketWatch and central-bank feeds, refreshed every 15 minutes. Impact, tone and bias labels are keyword-based, not advice.</Note>
     <Pills opts={CATS.map(c=>[c,c])} val={cat} set={setCat}/>
+    <Pills opts={[['ALL',`All Impact (${impCnt('ALL')})`],['HIGH',`🔴 High Impact (${impCnt('HIGH')})`],['MEDIUM',`🟠 Medium Impact (${impCnt('MEDIUM')})`]]} val={imp} set={setImp}/>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}}>
       <TouchableOpacity onPress={()=>setAsset(null)} style={{paddingHorizontal:12,paddingVertical:7,borderRadius:16,marginRight:6,backgroundColor:!asset?'#e6ebff':C.card,borderWidth:1,borderColor:C.line}}><T s={12} w='700' c={!asset?C.bg:C.tx}>All assets</T></TouchableOpacity>
       {ASSETS.map(x=>{const on=asset===x,k=cnt(x);return<TouchableOpacity key={x} onPress={()=>setAsset(on?null:x)} style={{flexDirection:'row',alignItems:'center',paddingLeft:10,paddingRight:6,paddingVertical:6,borderRadius:16,marginRight:6,backgroundColor:on?'#e6ebff':C.card,borderWidth:1,borderColor:on?'#e6ebff':C.line}}>
         <View style={{width:8,height:8,borderRadius:4,backgroundColor:AS[x][0],marginRight:6}}/><T s={12} w='700' c={on?C.bg:C.tx}>{x}</T>
         <View style={{minWidth:22,marginLeft:6,paddingHorizontal:6,paddingVertical:1,borderRadius:10,backgroundColor:on?C.bg:k?C.ac:C.line,alignItems:'center'}}><T s={11} w='800' c={on||k?'#fff':C.mut}>{k}</T></View></TouchableOpacity>})}</ScrollView>
-    {asset&&<Row style={{marginBottom:10}}><T c={C.mut} s={13}>Showing <T w='700'>{L.length}</T> stories tagged <T w='700' c={AS[asset][0]==='#b45309'?'#f59e0b':C.tx}>{asset}</T></T><Btn t='Clear ✕' on={()=>setAsset(null)} style={{paddingVertical:5}}/></Row>}
+    {asset&&<Row style={{marginBottom:10}}><T c={C.mut} s={13}>Showing <T w='700'>{L.length}</T> stories tagged <T w='700'>{asset}</T></T><Btn t='Clear ✕' on={()=>setAsset(null)} style={{paddingVertical:5}}/></Row>}
     <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{main}{side}</View><Reader n={sel} onClose={()=>setSel(null)}/></>;
 }
 function Risk(){
