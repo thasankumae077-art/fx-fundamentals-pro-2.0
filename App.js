@@ -352,7 +352,7 @@ function EconCalendar({cal,fx}){
     <Card style={{padding:0,overflow:'hidden'}}>
       <ScrollView horizontal={!wide} showsHorizontalScrollIndicator contentContainerStyle={{width:wide?'100%':undefined,minWidth:wide?'100%':MIN_W}}>
         <View style={{width:'100%',minWidth:wide?0:MIN_W}}>
-          <View style={{width:'100%',flexDirection:'row',alignItems:'center',paddingVertical:10,backgroundColor:'#172448',borderBottomWidth:1,borderBottomColor:C.line}}>
+                    <View style={{width:'100%',flexDirection:'row',alignItems:'center',paddingVertical:10,backgroundColor:'#172448',borderBottomWidth:1,borderBottomColor:C.line}}>
             <T s={10} w='800' c={C.mut} style={cell(COL.time)}>TIME</T>
             <T s={10} w='800' c={C.mut} style={cell(COL.currency)}>CCY</T>
             <T s={10} w='800' c={C.mut} style={cell(COL.impact)}>IMPACT</T>
@@ -360,6 +360,57 @@ function EconCalendar({cal,fx}){
             <T s={10} w='800' c={C.mut} style={cell(COL.detail)}>DETAIL</T>
             <T s={10} w='800' c={C.mut} style={cell(COL.actual,'right')}>ACTUAL</T>
             <T s={10} w='800' c={C.mut} style={cell(COL.forecast,'right')}>FCST</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.previous,'right')}>PREV</T>
+          </View>
+          {!filtered.length?<View style={{padding:18}}><T c={C.mut}>No events match this date range and filters.</T></View>:Object.entries(grouped).map(([k,ev])=><View key={k} style={{width:'100%'}}>
+            <View style={{backgroundColor:'#172448',padding:8}}><T s={12} w='800'>{dayLabel(k)} <T c={C.mut} s={10}>· {ev.length} events</T></T></View>
+            {ev.map(e=><EventRow key={e.id} e={e}/>)}
+          </View>)}
+        </View>
+      </ScrollView>
+    </Card>
+    <T c={C.mut} s={10}>Select View in the Detail column to open release figures and commonly affected currency pairs.</T>
+  </View>;
+
+  return<>
+    <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{side}{main}</View>
+
+    <Modal transparent animationType='slide' visible={importOpen} onRequestClose={()=>setImportOpen(false)}>
+      <View style={{flex:1,backgroundColor:'rgba(0,0,0,.72)',justifyContent:'center',padding:wide?40:12}}>
+        <View style={{backgroundColor:C.card,borderRadius:12,padding:16,borderWidth:1,borderColor:C.line,maxHeight:'90%'}}>
+          <Row><T s={18} w='800'>Import FF JSON/CSV</T><TouchableOpacity onPress={()=>setImportOpen(false)}><T s={20}>✕</T></TouchableOpacity></Row>
+          <Note>Paste a Forex Factory weekly JSON or CSV export. Supported columns: Date/Time, Currency/Country, Title/Event, Impact, Actual, Forecast, Previous.</Note>
+          <TextInput value={paste} onChangeText={setPaste} multiline placeholder='Paste JSON or CSV here…' placeholderTextColor={C.mut} textAlignVertical='top' style={{minHeight:210,maxHeight:380,color:C.tx,backgroundColor:C.bg,borderColor:C.line,borderWidth:1,borderRadius:8,padding:10}}/>
+          <Row style={{marginTop:10}}><Btn t='Cancel' on={()=>setImportOpen(false)}/><Btn primary t='Import events' on={importData}/></Row>
+        </View>
+      </View>
+    </Modal>
+
+    <Modal transparent animationType='slide' visible={!!detail} onRequestClose={()=>setDetail(null)}>
+      <View style={{flex:1,backgroundColor:'rgba(0,0,0,.7)',justifyContent:'flex-end',alignItems:'flex-end'}}>
+        <TouchableOpacity onPress={()=>setDetail(null)} style={{position:'absolute',top:0,left:0,right:0,bottom:0}}/>
+        <View style={{width:wide?480:'100%',maxHeight:'85%',backgroundColor:C.bg,borderTopLeftRadius:14,borderTopRightRadius:14,borderWidth:1,borderColor:C.line,padding:18}}>
+          {detail&&<>
+            <Row><T s={11} c={C.mut} w='800'>EVENT DETAILS</T><TouchableOpacity onPress={()=>setDetail(null)}><T s={20}>✕</T></TouchableOpacity></Row>
+            <T s={21} w='800' style={{marginVertical:12}}>{detail.title}</T>
+            <Row>
+              <T c={C.ac} w='800'>{detail.currency}</T>
+              <T c={dc[detail.impact]} w='800'>{detail.impact} Impact</T>
+              <T c={C.mut} s={12}>{new Date(detail.timestamp).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'})} IST</T>
+            </Row>
+            <Card title='Release figures'>
+              <Row><T c={C.mut}>Actual</T><T c={verdict(detail)>0?C.up:verdict(detail)<0?C.dn:C.tx} w='800'>{detail.actual??'—'}</T></Row>
+              <Row><T c={C.mut}>Forecast</T><T>{detail.forecast??'—'}</T></Row>
+              <Row><T c={C.mut}>Previous</T><T>{detail.previous??'—'}</T></Row>
+            </Card>
+            <Card title='Commonly affected pairs'><T s={12}>{eventPairs(detail.currency)}</T></Card>
+            <T s={10} c={C.mut}>Better/worse classification is an indicator-direction heuristic. Always verify the release definition and market reaction.</T>
+          </>}
+        </View>
+      </View>
+    </Modal>
+  </>;
+}
 
 function LineChart({data,color,h=140}){
   const [w,setW]=useState(0),lo=Math.min(...data),hi=Math.max(...data),X=i=>i*(w/(data.length-1)),Y=v=>h-6-(v-lo)/((hi-lo)||1)*(h-12);
