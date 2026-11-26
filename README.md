@@ -20,6 +20,9 @@ EXPO_PUBLIC_API_URL=https://<name>.onrender.com npx expo start
 ## 4. Website
 `npx expo export -p web` → deploy `dist/` as a Render Static Site (add its URL to `ALLOWED_ORIGINS`).
 
+## Update (v2)
+Replace `App.js` and `backend/server.js` in your GitHub repo and commit; Render redeploys. New endpoint: `GET /api/fundamentals`.
+
 ## Notes
 - RN has no native EventSource, so the app polls `/api/news` every 30s; `/api/news/stream` (SSE) serves web clients.
 - Gold: FRED no longer publishes a free gold series reliably; the app shows "n/a" if upstream has none.
