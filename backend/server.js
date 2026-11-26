@@ -171,22 +171,38 @@ async function fundamentals(){
 const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json'],CAL_NEXT=['https://nfs.faireconomy.media/ff_calendar_nextweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_nextweek.json'],MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
 async function firstJson(urls){let e;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2))}catch(x){e=x}}throw e}
 async function calendar(){
-  const from=Date.now()-2*864e5,to=Date.now()+7*864e5;
-  const u=`https://freeserv.dukascopy.com/2.0/index.php?path=common/calendar&date_from=${from}&date_to=${to}&limit=300`;
-  const raw=JSON.parse(await getText(u,{headers:{'User-Agent':UA,Accept:'application/json'}},2));
-  const arr=Array.isArray(raw)?raw:(raw.items||raw.events||[]);
-  const items=arr.filter(e=>MAJ.has((e.currency||e.country||'').toUpperCase())).map(e=>({
-    title:e.title||e.event||'Economic Release',
-    currency:(e.currency||e.country||'').toUpperCase(),
-    impact:/high|3/i.test(String(e.impact||e.importance))?'High':/med|2/i.test(String(e.impact||e.importance))?'Medium':'Low',
-    timestamp:new Date(typeof e.timestamp==='number'?e.timestamp*1000:(e.date||Date.now())).toISOString(),
-    forecast:e.forecast!=null?String(e.forecast):'',
-    previous:e.previous!=null?String(e.previous):'',
-    actual:e.actual!=null?String(e.actual):''
-  })).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
-  if(!items.length)throw new Error('Dukascopy calendar returned 0 events');
-  return{items,source:'Dukascopy Economic Calendar'};
+  const from=new Date(Date.now()-2*864e5).toISOString().slice(0,19)+'Z',to=new Date(Date.now()+7*864e5).toISOString().slice(0,19)+'Z';
+  try{
+    const u=`https://calendar-api.fxstreet.com/en/api/v1/eventDates/${from}/${to}?&volatilities=HIGH&volatilities=MEDIUM&volatilities=LOW&countries=US&countries=EMU&countries=DE&countries=UK&countries=JP&countries=CH&countries=CA&countries=AU&countries=NZ`;
+    const arr=JSON.parse(await getText(u,{headers:{'User-Agent':UA,Accept:'application/json',Origin:'https://fxstreet.com',Referer:'https://fxstreet.com/'}},2));
+    const C2M={US:'USD',EMU:'EUR',DE:'EUR',UK:'GBP',JP:'JPY',CH:'CHF',CA:'CAD',AU:'AUD',NZ:'NZD'};
+    if(Array.isArray(arr)&&arr.length){
+      const items=arr.map(e=>({
+        title:e.name||e.title||'Release',
+        currency:C2M[e.countryCode]||e.currencyCode||'USD',
+        impact:/high/i.test(e.volatility)?'High':/med/i.test(e.volatility)?'Medium':'Low',
+        timestamp:e.dateUtc||e.date,
+        forecast:e.consensus!=null?String(e.consensus):'',
+        previous:e.previous!=null?String(e.previous):'',
+        actual:e.actual!=null?String(e.actual):''
+      })).filter(x=>MAJ.has(x.currency)&&x.timestamp).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
+      if(items.length)return{items,source:'FXStreet Economic Calendar'};
+    }
+  }catch{}
+  // Guaranteed cloud-safe fallback: FRED official economic release dates
+  const REL=[[10,'USD','CPI Inflation Report','High'],[50,'USD','Non-Farm Payrolls & Unemployment','High'],[53,'USD','US GDP Release','High'],[101,'USD','FOMC Rate Decision / Minutes','High'],[21,'USD','Retail Sales & PPI','Medium']];
+  const out=[];
+  for(const[id,cur,title,imp]of REL){
+    try{
+      const html=await getText(`https://fred.stlouisfed.org/releases/calendar?rid=${id}`,{},1);
+      const ms=[...html.matchAll(/202[6-7]-\d{2}-\d{2}/g)].map(m=>m[0]);
+      for(const d of[...new Set(ms)].filter(d=>Math.abs(new Date(d)-Date.now())<14*864e5))out.push({title,currency:cur,impact:imp,timestamp:d+'T13:30:00Z',forecast:'',previous:'',actual:''});
+    }catch{}
+  }
+  if(!out.length)throw new Error('No calendar events found');
+  return{items:out.sort((a,b)=>a.timestamp.localeCompare(b.timestamp)),source:'FRED Official Release Schedule'};
 }
+
 
 async function cot(){
   const codes=Object.values(COT_MK).map(c=>`'${c}'`).join(','),url=`https://publicreporting.cftc.gov/resource/6dca-aqww.json?$where=${encodeURIComponent(`cftc_contract_market_code in(${codes})`)}&$order=${encodeURIComponent('report_date_as_yyyy_mm_dd DESC')}&$limit=64`;
