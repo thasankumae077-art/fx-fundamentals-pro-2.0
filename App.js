@@ -216,7 +216,6 @@ const act=(s,t)=>{const i=ist(t);return!closedWk(i)&&inR(i.md,s[1],s[2])};
 const nextOpen=t=>{const t0=Math.floor(t/6e4)*6e4;for(let k=1;k<=8200;k++){const x=t0+k*6e4;for(const s of SESS)if(act(s,x)&&!act(s,x-6e4))return{name:s[0],t:x}}return null};
 const fmtCd=ms=>{const s=Math.max(0,Math.floor(ms/1e3)),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}d ${p2(h)}h`:h?`${p2(h)}h ${p2(m)}m`:`${p2(m)}m ${p2(s%60)}s`};
 const hm=m=>`${p2(Math.floor(m/60))}:${p2(m%60)}`;
-// ==SESS-END
 const useNow=()=>{const [t,setT]=useState(Date.now());useEffect(()=>{const i=setInterval(()=>setT(Date.now()),1000);return()=>clearInterval(i)},[]);return t};
 function SessionBar(){
   const now=useNow(),i=ist(now),mk=Math.floor(now/6e4),no=useMemo(()=>nextOpen(mk*6e4),[mk]),on=SESS.map(s=>act(s,now)),ov=on[1]&&on[2];
@@ -284,42 +283,133 @@ function EconCalendar({cal,fx}){
   const importData=()=>{try{const rows=normalizeImportedCalendar(paste);if(!rows.length)throw new Error('No valid events found. Check the JSON/CSV headers and currency/date fields.');setLocalItems(rows);setImportOpen(false);setRange('This Week');setPicked(null);setPaste('');Alert.alert('Import complete',`${rows.length} events loaded locally.`)}catch(e){Alert.alert('Import failed',e.message)}};
   const dateCells=Array.from({length:offset},(_,i)=>({blank:true,key:`blank-${i}`})).concat(Array.from({length:days},(_,i)=>{const k=`${first.getUTCFullYear()}-${p2(first.getUTCMonth()+1)}-${p2(i+1)}`;return{key:k,day:i+1}}));
   const eventPairs=c=>({USD:'EURUSD · GBPUSD · AUDUSD · NZDUSD · USDJPY · USDCHF · USDCAD',EUR:'EURUSD · EURGBP · EURJPY · EURCHF · EURAUD · EURCAD · EURNZD',GBP:'GBPUSD · EURGBP · GBPJPY · GBPCHF · GBPAUD · GBPCAD · GBPNZD',JPY:'USDJPY · EURJPY · GBPJPY · AUDJPY · CADJPY · CHFJPY · NZDJPY',CHF:'USDCHF · EURCHF · GBPCHF · AUDCHF · CADCHF · NZDCHF',CAD:'USDCAD · EURCAD · GBPCAD · AUDCAD · NZDCAD',AUD:'AUDUSD · EURAUD · GBPAUD · AUDJPY · AUDCAD · AUDNZD',NZD:'NZDUSD · EURNZD · GBPNZD · AUDNZD · NZDJPY · NZDCAD'}[c]||'');
-  const EventRow=({e})=>{const d=ist(new Date(e.timestamp).getTime()),v=verdict(e);return<TouchableOpacity onPress={()=>setDetail(e)} style={{flexDirection:'row',alignItems:'center',paddingVertical:9,paddingHorizontal:7,borderTopWidth:1,borderTopColor:C.line,backgroundColor:C.bg}}>
-    <T s={11} w='700' c={C.mut} style={{width:65}}>{p2(d.h)}:{p2(d.m)}</T>
-    <T s={11} w='800' c={C.ac} style={{width:43}}>{e.currency}</T>
-    <View style={{width:48,flexDirection:'row',alignItems:'center'}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc[e.impact],marginRight:5}}/><T s={10} c={dc[e.impact]}>{e.impact[0]}</T></View>
-    <T s={12} style={{flex:1,paddingRight:5}}>{e.title}</T>
-    <T s={11} w='700' c={v>0?C.up:v<0?C.dn:C.tx} style={{width:60,textAlign:'right'}}>{e.actual??'—'}</T>
-    <T s={11} c={C.mut} style={{width:60,textAlign:'right'}}>{e.forecast??'—'}</T>
-    <T s={11} c={C.mut} style={{width:60,textAlign:'right'}}>{e.previous??'—'}</T>
-  </TouchableOpacity>};
+
+  // Fixed column widths keep the header and every event row aligned.
+  // The table scrolls horizontally on narrow screens instead of compressing its columns.
+  const COL={time:76,currency:78,impact:84,event:270,detail:76,actual:92,forecast:92,previous:92};
+  const TABLE_WIDTH=Object.values(COL).reduce((a,b)=>a+b,0);
+  const cell=(width,align='left')=>({width,flexShrink:0,textAlign:align,paddingHorizontal:8});
+
+  const EventRow=({e})=>{
+    const d=ist(new Date(e.timestamp).getTime()),v=verdict(e);
+    return<View style={{width:TABLE_WIDTH,flexDirection:'row',alignItems:'center',minHeight:44,paddingVertical:8,borderTopWidth:1,borderTopColor:C.line,backgroundColor:C.bg}}>
+      <T s={11} w='700' c={C.mut} style={cell(COL.time)}>{p2(d.h)}:{p2(d.m)}</T>
+      <T s={11} w='800' c={C.ac} style={cell(COL.currency)}>{e.currency}</T>
+      <View style={{...cell(COL.impact),flexDirection:'row',alignItems:'center'}}>
+        <View style={{width:8,height:8,borderRadius:4,backgroundColor:dc[e.impact]||C.mut,marginRight:7}}/>
+        <T s={10} c={dc[e.impact]||C.mut}>{e.impact}</T>
+      </View>
+      <T s={12} style={{...cell(COL.event),paddingRight:12}}>{e.title}</T>
+      <View style={{width:COL.detail,flexShrink:0,paddingHorizontal:8}}>
+        <TouchableOpacity accessibilityRole='button' accessibilityLabel={`View details for ${e.title}`} onPress={()=>setDetail(e)} style={{alignSelf:'flex-start',paddingVertical:5,paddingHorizontal:9,borderRadius:6,backgroundColor:'#1d315f',borderWidth:1,borderColor:'#2d4b85'}}>
+          <T s={11} w='700' c='#bfdbfe'>View</T>
+        </TouchableOpacity>
+      </View>
+      <T s={11} w='700' c={v>0?C.up:v<0?C.dn:C.tx} style={cell(COL.actual,'right')}>{e.actual??'—'}</T>
+      <T s={11} c={C.mut} style={cell(COL.forecast,'right')}>{e.forecast??'—'}</T>
+      <T s={11} c={C.mut} style={cell(COL.previous,'right')}>{e.previous??'—'}</T>
+    </View>;
+  };
+
   const side=<View style={{width:wide?260:'100%',marginRight:wide?14:0}}>
     <Card title='Month at a glance'>
-      <Row style={{marginBottom:10}}><TouchableOpacity onPress={()=>setAnchor(k=>{const d=keyDate(`${k.slice(0,7)}-01`);d.setUTCMonth(d.getUTCMonth()-1);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-01`})}><T s={20}>‹</T></TouchableOpacity><T w='800'>{MN[first.getUTCMonth()]} {first.getUTCFullYear()}</T><TouchableOpacity onPress={()=>setAnchor(k=>{const d=keyDate(`${k.slice(0,7)}-01`);d.setUTCMonth(d.getUTCMonth()+1);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-01`})}><T s={20}>›</T></TouchableOpacity></Row>
-      <View style={{flexDirection:'row',flexWrap:'wrap'}}>{WD.map(x=><T key={x} s={10} c={C.mut} style={{width:'14.28%',textAlign:'center',paddingVertical:5}}>{x[0]}</T>)}
-      {dateCells.map(x=><TouchableOpacity key={x.key} disabled={x.blank} onPress={()=>{setPicked(x.key);setRange('Selected Day')}} style={{width:'14.28%',height:34,alignItems:'center',justifyContent:'center',borderRadius:7,backgroundColor:x.key===picked?'#1d4ed8':x.key===today?'#1e3a5f':'transparent'}}><T s={11} c={x.blank?C.mut:x.key===picked?'#fff':C.tx}>{x.day||''}</T></TouchableOpacity>)}</View>
+      <Row style={{marginBottom:10}}>
+        <TouchableOpacity onPress={()=>setAnchor(k=>{const d=keyDate(`${k.slice(0,7)}-01`);d.setUTCMonth(d.getUTCMonth()-1);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-01`})}><T s={20}>‹</T></TouchableOpacity>
+        <T w='800'>{MN[first.getUTCMonth()]} {first.getUTCFullYear()}</T>
+        <TouchableOpacity onPress={()=>setAnchor(k=>{const d=keyDate(`${k.slice(0,7)}-01`);d.setUTCMonth(d.getUTCMonth()+1);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-01`})}><T s={20}>›</T></TouchableOpacity>
+      </Row>
+      <View style={{flexDirection:'row',flexWrap:'wrap'}}>
+        {WD.map(x=><T key={x} s={10} c={C.mut} style={{width:'14.28%',textAlign:'center',paddingVertical:5}}>{x[0]}</T>)}
+        {dateCells.map(x=><TouchableOpacity key={x.key} disabled={x.blank} onPress={()=>{setPicked(x.key);setRange('Selected Day')}} style={{width:'14.28%',height:34,alignItems:'center',justifyContent:'center',borderRadius:7,backgroundColor:x.key===picked?'#1d4ed8':x.key===today?'#1e3a5f':'transparent'}}><T s={11} c={x.blank?C.mut:x.key===picked?'#fff':C.tx}>{x.day||''}</T></TouchableOpacity>)}
+      </View>
     </Card>
-    <Card title='Quick date ranges'><View style={{flexDirection:'row',flexWrap:'wrap'}}>{ranges.map(r=><TouchableOpacity key={r} onPress={()=>{setRange(r);setPicked(null)}} style={{paddingHorizontal:9,paddingVertical:7,margin:3,borderRadius:7,backgroundColor:range===r?C.ac:C.line}}><T s={11} w='700'>{r}</T></TouchableOpacity>)}
-      <TouchableOpacity onPress={jumpNext} style={{paddingHorizontal:12,paddingVertical:7,margin:3,borderRadius:7,backgroundColor:'#14532d',borderWidth:1,borderColor:C.up}}><T s={11} w='800' c='#bbf7d0'>↗ Up Next</T></TouchableOpacity></View></Card>
-    <Card title='Central bank policy rates'><Note>Live values from Fundamentals API · sorted high to low</Note>{rates.length?rates.map(x=><Row key={x.c} style={{paddingVertical:4}}><T w='700' s={12}>{x.c}</T><T w='700' s={12} c={C.up}>{f2(x.v)}%</T></Row>):<T s={12} c={C.mut}>Policy rates unavailable.</T>}</Card>
-    <Card title='Legend'><Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.High,marginRight:7}}/><T s={11}>High impact</T></Row><Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.Medium,marginRight:7}}/><T s={11}>Medium impact</T></Row><Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.Low,marginRight:7}}/><T s={11}>Low impact</T></Row><T s={11} c={C.up}>Green number · better than forecast</T><T s={11} c={C.dn}>Red number · worse than forecast</T></Card>
+    <Card title='Quick date ranges'>
+      <View style={{flexDirection:'row',flexWrap:'wrap'}}>
+        {ranges.map(r=><TouchableOpacity key={r} onPress={()=>{setRange(r);setPicked(null)}} style={{paddingHorizontal:9,paddingVertical:7,margin:3,borderRadius:7,backgroundColor:range===r?C.ac:C.line}}><T s={11} w='700'>{r}</T></TouchableOpacity>)}
+        <TouchableOpacity onPress={jumpNext} style={{paddingHorizontal:12,paddingVertical:7,margin:3,borderRadius:7,backgroundColor:'#14532d',borderWidth:1,borderColor:C.up}}><T s={11} w='800' c='#bbf7d0'>↗ Up Next</T></TouchableOpacity>
+      </View>
+    </Card>
+    <Card title='Central bank policy rates'>
+      <Note>Live values from Fundamentals API · sorted high to low</Note>
+      {rates.length?rates.map(x=><Row key={x.c} style={{paddingVertical:4}}><T w='700' s={12}>{x.c}</T><T w='700' s={12} c={C.up}>{f2(x.v)}%</T></Row>):<T s={12} c={C.mut}>Policy rates unavailable.</T>}
+    </Card>
+    <Card title='Legend'>
+      <Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.High,marginRight:7}}/><T s={11}>High impact</T></Row>
+      <Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.Medium,marginRight:7}}/><T s={11}>Medium impact</T></Row>
+      <Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.Low,marginRight:7}}/><T s={11}>Low impact</T></Row>
+      <T s={11} c={C.up}>Green number · better than forecast</T>
+      <T s={11} c={C.dn}>Red number · worse than forecast</T>
+    </Card>
     <Btn t='Import FF JSON/CSV' on={()=>setImportOpen(true)}/>
   </View>;
+
   const main=<View style={{flex:1,minWidth:0}}>
-    <T s={22} w='800'>Economic calendar</T><Note>{range}: {dayLabel(from)} – {dayLabel(to)} · Times shown in IST (Asia/Kolkata). {cal?.source||'Waiting for calendar data.'}{cal?.warning?` · ${cal.warning}`:''}{cal?.stale?' · Showing stale cache.':''}</Note>
+    <T s={22} w='800'>Economic calendar</T>
+    <Note>{range}: {dayLabel(from)} – {dayLabel(to)} · Times shown in IST (Asia/Kolkata). {cal?.source||'Waiting for calendar data.'}{cal?.warning?` · ${cal.warning}`:''}{cal?.stale?' · Showing stale cache.':''}</Note>
     <Pills opts={[['ALL','All'],...MAJ.map(c=>[c,c])]} val={cur} set={setCur}/>
     <Pills opts={[['ALL','All'],['High','High'],['Medium','Medium'],['Low','Low']]} val={imp} set={setImp}/>
     <TextInput value={search} onChangeText={setSearch} placeholder='⌕  Search Events' placeholderTextColor={C.mut} style={{color:C.tx,backgroundColor:C.card,borderWidth:1,borderColor:C.line,borderRadius:8,paddingHorizontal:12,paddingVertical:9,marginBottom:10}}/>
+
     <Card style={{padding:0,overflow:'hidden'}}>
-      <View style={{flexDirection:'row',padding:8,backgroundColor:'#172448'}}>{[['TIME',65],['CCY',43],['IMP',48],['EVENT',0],['ACTUAL',60],['FCST',60],['PREV',60]].map(([x,w])=><T key={x} s={9} w='800' c={C.mut} style={{width:w||undefined,flex:w?0:1,textAlign:w?'right':'left'}}>{x}</T>)}</View>
-      {!filtered.length?<View style={{padding:18}}><T c={C.mut}>No events match this date range and filters.</T></View>:Object.entries(grouped).map(([k,ev])=><View key={k}><View style={{backgroundColor:'#172448',padding:8}}><T s={12} w='800'>{dayLabel(k)} <T c={C.mut} s={10}>· {ev.length} events</T></T></View>{ev.map(e=><EventRow key={e.id} e={e}/>)}</View>)}
+      <ScrollView horizontal showsHorizontalScrollIndicator contentContainerStyle={{minWidth:TABLE_WIDTH}}>
+        <View style={{width:TABLE_WIDTH}}>
+          <View style={{width:TABLE_WIDTH,flexDirection:'row',alignItems:'center',paddingVertical:11,backgroundColor:'#172448',borderBottomWidth:1,borderBottomColor:C.line}}>
+            <T s={10} w='800' c={C.mut} style={cell(COL.time)}>TIME</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.currency)}>CURRENCY</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.impact)}>IMPACT</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.event)}>EVENT</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.detail)}>DETAIL</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.actual,'right')}>ACTUAL</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.forecast,'right')}>FORECAST</T>
+            <T s={10} w='800' c={C.mut} style={cell(COL.previous,'right')}>PREVIOUS</T>
+          </View>
+          {!filtered.length?<View style={{padding:18}}><T c={C.mut}>No events match this date range and filters.</T></View>:Object.entries(grouped).map(([k,ev])=><View key={k} style={{width:TABLE_WIDTH}}>
+            <View style={{backgroundColor:'#172448',padding:8}}><T s={12} w='800'>{dayLabel(k)} <T c={C.mut} s={10}>· {ev.length} events</T></T></View>
+            {ev.map(e=><EventRow key={e.id} e={e}/>)}
+          </View>)}
+        </View>
+      </ScrollView>
     </Card>
-    <T c={C.mut} s={10}>Tap any event to view release details and commonly affected currency pairs. Imported events are stored locally for this screen only.</T>
+    <T c={C.mut} s={10}>Use the horizontal table scroll on smaller screens. Select View in the Detail column to open release figures and commonly affected currency pairs.</T>
   </View>;
+
   return<>
     <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{side}{main}</View>
-    <Modal transparent animationType='slide' visible={importOpen} onRequestClose={()=>setImportOpen(false)}><View style={{flex:1,backgroundColor:'rgba(0,0,0,.72)',justifyContent:'center',padding:wide?40:12}}><View style={{backgroundColor:C.card,borderRadius:12,padding:16,borderWidth:1,borderColor:C.line,maxHeight:'90%'}}><Row><T s={18} w='800'>Import FF JSON/CSV</T><TouchableOpacity onPress={()=>setImportOpen(false)}><T s={20}>✕</T></TouchableOpacity></Row><Note>Paste a Forex Factory weekly JSON or CSV export. Supported columns: Date/Time, Currency/Country, Title/Event, Impact, Actual, Forecast, Previous.</Note><TextInput value={paste} onChangeText={setPaste} multiline placeholder='Paste JSON or CSV here…' placeholderTextColor={C.mut} textAlignVertical='top' style={{minHeight:210,maxHeight:380,color:C.tx,backgroundColor:C.bg,borderColor:C.line,borderWidth:1,borderRadius:8,padding:10}}/><Row style={{marginTop:10}}><Btn t='Cancel' on={()=>setImportOpen(false)}/><Btn primary t='Import events' on={importData}/></Row></View></View></Modal>
-    <Modal transparent animationType='slide' visible={!!detail} onRequestClose={()=>setDetail(null)}><View style={{flex:1,backgroundColor:'rgba(0,0,0,.7)',justifyContent:'flex-end',alignItems:'flex-end'}}><TouchableOpacity onPress={()=>setDetail(null)} style={{position:'absolute',top:0,left:0,right:0,bottom:0}}/><View style={{width:wide?480:'100%',maxHeight:'85%',backgroundColor:C.bg,borderTopLeftRadius:14,borderTopRightRadius:14,borderWidth:1,borderColor:C.line,padding:18}}>{detail&&<><Row><T s={11} c={C.mut} w='800'>EVENT DETAILS</T><TouchableOpacity onPress={()=>setDetail(null)}><T s={20}>✕</T></TouchableOpacity></Row><T s={21} w='800' style={{marginVertical:12}}>{detail.title}</T><Row><T c={C.ac} w='800'>{detail.currency}</T><T c={dc[detail.impact]} w='800'>{detail.impact} Impact</T><T c={C.mut} s={12}>{new Date(detail.timestamp).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'})} IST</T></Row><Card title='Release figures'><Row><T c={C.mut}>Actual</T><T c={verdict(detail)>0?C.up:verdict(detail)<0?C.dn:C.tx} w='800'>{detail.actual??'—'}</T></Row><Row><T c={C.mut}>Forecast</T><T>{detail.forecast??'—'}</T></Row><Row><T c={C.mut}>Previous</T><T>{detail.previous??'—'}</T></Row></Card><Card title='Commonly affected pairs'><T s={12}>{eventPairs(detail.currency)}</T></Card><T s={10} c={C.mut}>Better/worse classification is an indicator-direction heuristic. Always verify the release definition and market reaction.</T></>}</View></View></Modal>
+
+    <Modal transparent animationType='slide' visible={importOpen} onRequestClose={()=>setImportOpen(false)}>
+      <View style={{flex:1,backgroundColor:'rgba(0,0,0,.72)',justifyContent:'center',padding:wide?40:12}}>
+        <View style={{backgroundColor:C.card,borderRadius:12,padding:16,borderWidth:1,borderColor:C.line,maxHeight:'90%'}}>
+          <Row><T s={18} w='800'>Import FF JSON/CSV</T><TouchableOpacity onPress={()=>setImportOpen(false)}><T s={20}>✕</T></TouchableOpacity></Row>
+          <Note>Paste a Forex Factory weekly JSON or CSV export. Supported columns: Date/Time, Currency/Country, Title/Event, Impact, Actual, Forecast, Previous.</Note>
+          <TextInput value={paste} onChangeText={setPaste} multiline placeholder='Paste JSON or CSV here…' placeholderTextColor={C.mut} textAlignVertical='top' style={{minHeight:210,maxHeight:380,color:C.tx,backgroundColor:C.bg,borderColor:C.line,borderWidth:1,borderRadius:8,padding:10}}/>
+          <Row style={{marginTop:10}}><Btn t='Cancel' on={()=>setImportOpen(false)}/><Btn primary t='Import events' on={importData}/></Row>
+        </View>
+      </View>
+    </Modal>
+
+    <Modal transparent animationType='slide' visible={!!detail} onRequestClose={()=>setDetail(null)}>
+      <View style={{flex:1,backgroundColor:'rgba(0,0,0,.7)',justifyContent:'flex-end',alignItems:'flex-end'}}>
+        <TouchableOpacity onPress={()=>setDetail(null)} style={{position:'absolute',top:0,left:0,right:0,bottom:0}}/>
+        <View style={{width:wide?480:'100%',maxHeight:'85%',backgroundColor:C.bg,borderTopLeftRadius:14,borderTopRightRadius:14,borderWidth:1,borderColor:C.line,padding:18}}>
+          {detail&&<>
+            <Row><T s={11} c={C.mut} w='800'>EVENT DETAILS</T><TouchableOpacity onPress={()=>setDetail(null)}><T s={20}>✕</T></TouchableOpacity></Row>
+            <T s={21} w='800' style={{marginVertical:12}}>{detail.title}</T>
+            <Row>
+              <T c={C.ac} w='800'>{detail.currency}</T>
+              <T c={dc[detail.impact]} w='800'>{detail.impact} Impact</T>
+              <T c={C.mut} s={12}>{new Date(detail.timestamp).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'})} IST</T>
+            </Row>
+            <Card title='Release figures'>
+              <Row><T c={C.mut}>Actual</T><T c={verdict(detail)>0?C.up:verdict(detail)<0?C.dn:C.tx} w='800'>{detail.actual??'—'}</T></Row>
+              <Row><T c={C.mut}>Forecast</T><T>{detail.forecast??'—'}</T></Row>
+              <Row><T c={C.mut}>Previous</T><T>{detail.previous??'—'}</T></Row>
+            </Card>
+            <Card title='Commonly affected pairs'><T s={12}>{eventPairs(detail.currency)}</T></Card>
+            <T s={10} c={C.mut}>Better/worse classification is an indicator-direction heuristic. Always verify the release definition and market reaction.</T>
+          </>}
+        </View>
+      </View>
+    </Modal>
   </>;
 }
 function LineChart({data,color,h=140}){
