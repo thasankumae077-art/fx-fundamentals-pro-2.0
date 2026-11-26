@@ -172,13 +172,20 @@ const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https
 async function firstJson(urls){let e;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2))}catch(x){e=x}}throw e}
 async function calendar(){
   const[w,n]=await Promise.allSettled([firstJson(CAL_THIS),firstJson(CAL_NEXT)]);
-  if(w.status!=='fulfilled'||!Array.isArray(w.value))throw new Error('Calendar feed unavailable: '+(w.reason?.message||'bad format'));
-  const raw=[...w.value,...(n.status==='fulfilled'&&Array.isArray(n.value)?n.value:[])];
-  const items=raw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>({title:e.title,currency:e.country||e.currency,impact:/^(high|medium|low)$/i.test(e.impact||'')?e.impact[0].toUpperCase()+e.impact.slice(1).toLowerCase():'Low',timestamp:(d=>isNaN(d)?null:d.toISOString())(new Date(e.date)),forecast:e.forecast||null,previous:e.previous||null,actual:e.actual||null}));
-  const ok=items.filter(e=>e.timestamp).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
-  if(!ok.length)throw new Error('Calendar feed returned no events');
-  return{items:ok,source:'Forex Factory public calendar feed (faireconomy.media). Actuals appear only if the feed supplies them.'}}
-const COT_MK={EUR:'099741',GBP:'096742',JPY:'097741',CHF:'092741',CAD:'090741',AUD:'232741',NZD:'112741',USD:'098662'};
+  if(w.status==='fulfilled'&&Array.isArray(w.value)){
+    const raw=[...w.value,...(n.status==='fulfilled'&&Array.isArray(n.value)?n.value:[])];
+    const items=raw.filter(e=>MAJ.has(e.country)&&e.date).map(e=>({title:e.title,currency:e.country,impact:/high/i.test(e.impact)?'High':/med/i.test(e.impact)?'Medium':'Low',timestamp:e.date,forecast:e.forecast||'',previous:e.previous||'',actual:e.actual||''}));
+    const ok=items.filter(e=>e.timestamp).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
+    if(ok.length)return{items:ok,source:'Forex Factory public calendar feed (faireconomy.media)'};
+  }
+  const C2M={US:'USD',EU:'EUR',DE:'EUR',GB:'GBP',JP:'JPY',CH:'CHF',CA:'CAD',AU:'AUD',NZ:'NZD'};
+  const from=new Date(Date.now()-2*864e5).toISOString(),to=new Date(Date.now()+7*864e5).toISOString();
+  const j=JSON.parse(await getText(`https://economic-calendar.tradingview.com/events?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&countries=US,EU,DE,GB,JP,CH,CA,AU,NZ`,{headers:{'User-Agent':UA,Origin:'https://tradingview.com',Referer:'https://tradingview.com/'}},2));
+  const items=(j.result||[]).map(e=>({title:e.title||e.indicator||'Release',currency:C2M[e.country]||'USD',impact:e.importance>=1?'High':e.importance===0?'Medium':'Low',timestamp:e.date,forecast:e.forecast!=null?String(e.forecast):'',previous:e.previous!=null?String(e.previous):'',actual:e.actual!=null?String(e.actual):''})).filter(x=>MAJ.has(x.currency)&&x.timestamp).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
+  if(!items.length)throw new Error('Calendar feeds returned no events');
+  return{items,source:'TradingView Economic Calendar'};
+}
+
 async function cot(){
   const codes=Object.values(COT_MK).map(c=>`'${c}'`).join(','),url=`https://publicreporting.cftc.gov/resource/6dca-aqww.json?$where=${encodeURIComponent(`cftc_contract_market_code in(${codes})`)}&$order=${encodeURIComponent('report_date_as_yyyy_mm_dd DESC')}&$limit=64`;
   const rows=JSON.parse(await getText(url,{headers:{'User-Agent':UA,Accept:'application/json'}},3));
