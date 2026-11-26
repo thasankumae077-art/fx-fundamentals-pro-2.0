@@ -975,7 +975,6 @@ async function calendar() {
   }
 }
 
-};
 const COT_MK={EUR:'099741',GBP:'096742',JPY:'097741',CHF:'092741',CAD:'090741',AUD:'232741',NZD:'112741',USD:'098662'};
 
 async function cot(){
