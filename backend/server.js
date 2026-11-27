@@ -312,8 +312,9 @@ setTimeout(()=>cached('f',18e5,fundamentals).catch(()=>{}),4000);
 setInterval(()=>cached('f',0,fundamentals,true).catch(()=>{}),18e5);
 
 // ---- Economic calendar (Forex Factory 1-to-1 schedule + live actuals merged from TradingView & FXStreet)
-const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json'];
-const CAL_NEXT=['https://nfs.faireconomy.media/ff_calendar_nextweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_nextweek.json'];
+const CAL_THIS=['https://jolly-dust-d52d.tharmarthasan.workers.dev','https://nfs.faireconomy.media/ff_calendar_thisweek.json'];
+const CAL_NEXT=['https://jolly-dust-d52d.tharmarthasan.workers.dev?week=next','https://nfs.faireconomy.media/ff_calendar_nextweek.json'];
+
 const MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
 const TV_CUR={US:'USD',EU:'EUR',DE:'EUR',FR:'EUR',IT:'EUR',ES:'EUR',GB:'GBP',JP:'JPY',CH:'CHF',CA:'CAD',AU:'AUD',NZ:'NZD'};
 const IST_OFF=5.5*36e5;
