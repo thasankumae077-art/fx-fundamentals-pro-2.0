@@ -691,7 +691,22 @@ http.createServer(async(req,res)=>{
   res.setHeader('Strict-Transport-Security','max-age=15552000');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'unsafe-inline'");res.setHeader('Cross-Origin-Resource-Policy','same-site');
   if(o&&ORIGINS.includes(o)){res.setHeader('Access-Control-Allow-Origin',o);res.setHeader('Vary','Origin')}
   if(req.method==='OPTIONS'){res.writeHead(204);return res.end()}
-  if(req.method!=='GET')return send(res,405,{error:'Method not allowed'});
+  if(req.method==='POST'&&new URL(req.url,'http://x').pathname==='/api/calendar/seed'){
+  let body='';req.on('data',c=>body+=c);
+  req.on('end',()=>{try{
+    const raw=JSON.parse(body);const arr=Array.isArray(raw)?raw:(Array.isArray(raw.items)?raw.items:[]);
+    const items=arr.map(e=>({title:String(e.title||'').trim(),currency:String(e.country||e.currency||'').trim().toUpperCase(),impact:String(e.impact||'Medium').trim(),timestamp:e.date?new Date(e.date).toISOString():e.timestamp,forecast:e.forecast||null,previous:e.previous||null,actual:null,actualSource:null,detail:null})).filter(e=>e.title&&e.currency&&e.timestamp);
+    if(!items.length)return send(res,400,{error:'No valid FF events'});
+    const locked={ffLocked:true,fetchedAt:Date.now(),items};
+    calendar.ffScheduleCache=locked;
+    try{fs.writeFileSync('/tmp/ff_schedule.json',JSON.stringify(locked));}catch{}
+    cache.delete('c');cache.delete('d');cache.delete('f');
+    return send(res,200,{ok:true,ffLocked:true,count:items.length});
+  }catch(err){return send(res,400,{error:String(err.message||err)});}});
+  return;
+}
+if(req.method!=='GET')return send(res,405,{error:'Method not allowed'});
+
   const U=new URL(req.url,'http://x'),p=U.pathname,force=U.searchParams.get('force')==='1';
   try{
     if(p==='/api/health')return send(res,200,{ok:true,uptime:process.uptime(),time:new Date().toISOString()});
