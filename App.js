@@ -817,10 +817,11 @@ function NextHigh({ cal }) {
 // 7. OVERVIEW & CONSOLIDATED MACRO EXECUTIVE DASHBOARD (PRIORITY 1, 3, 5)
 // ============================================================================
 
-function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, cal, dash, assets }) { 
+function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, cal, dash, assets, cot }) { 
   const surprises = useMemo(() => computeEconomicSurprises(cal), [cal]);
   const transition = useMemo(() => computeRegimeTransition(A, fx, intel, gold, dash, assets), [A, fx, intel, gold, dash, assets]);
   const cbExp = useMemo(() => computeCentralBankExpectations(A, fx, dash), [A, fx, dash]);
+  const squeezeData = useMemo(() => computeInstitutionalSqueeze(cot, fx), [cot, fx]);
   const [strTf, setStrTf] = useState(21);
   const [corrWin, setCorrWin] = useState('60D');
   const [methodOpen, setMethodOpen] = useState(false);
@@ -994,6 +995,41 @@ function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, ca
           </View>
           <TouchableOpacity onPress={() => onNavigate(3)}>
             <T s={10} c={C.ac} w='700'>Transition Radar →</T>
+          </TouchableOpacity>
+        </View>
+<View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.line, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
+            <T s={10} c={C.mut} w='800' style={{ marginRight: 8 }}>TOP COT SQUEEZE RADAR:</T>
+            <TouchableOpacity onPress={() => onNavigate(1)}>
+              {(() => {
+                const top = squeezeData.topAlert;
+                if (!top) {
+                  return <Tag text='COT Positioning: Balanced / Loading…' bg={C.line} fg={C.mut} />;
+                }
+                const st = squeezeBadgeStyle(top.direction, top.highAlert);
+                return (
+                  <Tag
+                    text={`${top.highAlert ? '⚡ ' : ''}${top.cur} · ${top.direction} (${top.squeezeScore}/100 · ${top.crowdingPct}% Crowd)`}
+                    bg={st.bg}
+                    fg={st.fg}
+                    border={st.border}
+                  />
+                );
+              })()}
+            </TouchableOpacity>
+            {squeezeData.highAlertCount > 1 && (
+              <TouchableOpacity onPress={() => onNavigate(1)}>
+                <Tag
+                  text={`+${squeezeData.highAlertCount - 1} More Alert${squeezeData.highAlertCount > 2 ? 's' : ''}`}
+                  bg={C.warnBg}
+                  fg={C.warnTx}
+                  border={C.warn}
+                />
+              </TouchableOpacity>
+            )}
+          </View>
+          <TouchableOpacity onPress={() => onNavigate(1)}>
+            <T s={10} c={C.ac} w='700'>Squeeze Radar →</T>
           </TouchableOpacity>
         </View>
         {!!exec?.upcomingHighImpact?.length && (
@@ -1609,9 +1645,325 @@ function CentralBankExpectationsCard({ data, onOpenScore }) {
     </Card>
   );
 }
+// == START INSERT: FEATURE C (INSTITUTIONAL EXPOSURE & SQUEEZE RADAR) ==
+const SQUEEZE_CUR = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD', 'XAU'];
+
+function fmtCotContracts(v) {
+  if (!okN(v)) return '—';
+  const sign = v > 0 ? '+' : v < 0 ? '-' : '';
+  const abs = Math.abs(v);
+  if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(1)}k`;
+  return `${sign}${Math.round(abs)}`;
+}
+
+function squeezeBadgeStyle(direction, highAlert) {
+  if (direction === 'SHORT SQUEEZE RISK') {
+    return highAlert
+      ? { bg: C.upBg, fg: C.upTx, border: C.up }
+      : { bg: '#0f3d26', fg: '#86efac', border: '#22c55e' };
+  }
+  if (direction === 'LONG LIQUIDATION RISK') {
+    return highAlert
+      ? { bg: C.dnBg, fg: C.dnTx, border: C.dn }
+      : { bg: '#4c1118', fg: '#fca5a5', border: '#ef4444' };
+  }
+  return { bg: C.line, fg: C.tx, border: '#64748b' };
+}
+
+function computeInstitutionalSqueeze(cot, fx) {
+  const K = cot?.data || {};
+  const scores = fx?.scores || {};
+
+  const list = SQUEEZE_CUR.map(c => {
+    const raw = c === 'XAU' ? (K.XAU || K.XAUUSD || K.GOLD || null) : (K[c] || null);
+    const specNet = raw
+      ? (raw.net ?? raw.specNet ?? raw.nonCommNet ?? (okN(raw.long) && okN(raw.short) ? raw.long - raw.short : null))
+      : null;
+
+    if (!raw || !okN(specNet)) {
+      return {
+        cur: c,
+        available: false,
+        specNet: null,
+        commNet: null,
+        commEstimated: false,
+        wowChange: null,
+        netPctOi: null,
+        crowdingPct: null,
+        macroScore: null,
+        squeezeScore: 0,
+        direction: 'BALANCED',
+        highAlert: false,
+        flowReversing: false,
+        macroContradicts: false,
+        alignmentLabel: raw?.unavailableReason || 'Pending CFTC Contract',
+        observationDate: raw?.observationDate || raw?.date || null,
+        stale: !!raw?.stale
+      };
+    }
+
+    const wowChange = raw.wowNetChange ?? raw.change ?? raw.wow ?? null;
+    const oi = raw.oi ?? raw.openInterest ?? null;
+    const netPctOi = okN(raw.netPctOi)
+      ? raw.netPctOi
+      : (okN(oi) && oi > 0 ? Number(((specNet / oi) * 100).toFixed(1)) : null);
+
+    // Commercial (Hedger) Net: use explicit CFTC commercial fields if present, else zero-sum hedger offset
+    const explicitComm =
+      raw.commNet ??
+      raw.commercialNet ??
+      (okN(raw.commLong) && okN(raw.commShort) ? raw.commLong - raw.commShort : null) ??
+      (okN(raw.commercialLong) && okN(raw.commercialShort) ? raw.commercialLong - raw.commercialShort : null);
+    const commEstimated = !okN(explicitComm);
+    const commNet = commEstimated ? -specNet : explicitComm;
+
+    // Crowding / Percentile Index (0–100%)
+    let crowdingPct = null;
+    if (okN(raw.cotIndex)) crowdingPct = Math.round(raw.cotIndex);
+    else if (okN(raw.percentile52w)) crowdingPct = Math.round(raw.percentile52w);
+    else if (okN(raw.percentile3y)) crowdingPct = Math.round(raw.percentile3y);
+    else if (okN(raw.min52w) && okN(raw.max52w) && raw.max52w > raw.min52w) {
+      crowdingPct = Math.round(((specNet - raw.min52w) / (raw.max52w - raw.min52w)) * 100);
+    } else if (okN(netPctOi)) {
+      crowdingPct = Math.round(50 + (netPctOi / 40) * 50);
+    } else {
+      crowdingPct = 50;
+    }
+    crowdingPct = Math.max(0, Math.min(100, crowdingPct));
+
+    // Fundamental Macro Score (use direct currency score; for XAU fall back to inverse USD macro proxy)
+    const macroScore =
+      scores[c]?.totalScore ??
+      (c === 'XAU' && okN(scores.USD?.totalScore) ? Number((-scores.USD.totalScore).toFixed(2)) : null);
+
+    const isCrowdedLong = crowdingPct >= 75;
+    const isCrowdedShort = crowdingPct <= 25;
+    const isCrowded = isCrowdedLong || isCrowdedShort;
+
+    const flowReversing =
+      (isCrowdedLong && okN(wowChange) && wowChange < 0) ||
+      (isCrowdedShort && okN(wowChange) && wowChange > 0);
+
+    const macroContradicts =
+      (isCrowdedLong && okN(macroScore) && macroScore <= -0.35) ||
+      (isCrowdedShort && okN(macroScore) && macroScore >= 0.35);
+
+    const commOpposesSpec = okN(commNet) && Math.sign(commNet) === -Math.sign(specNet);
+
+    // Squeeze Risk Score (0–100)
+    let score = 0;
+    if (isCrowdedLong) score += 22 + ((crowdingPct - 75) / 25) * 23;
+    else if (isCrowdedShort) score += 22 + ((25 - crowdingPct) / 25) * 23;
+    else score += (Math.abs(crowdingPct - 50) / 25) * 22;
+
+    if (flowReversing) {
+      const flowRatio = Math.min(1, Math.abs(wowChange) / Math.max(5000, Math.abs(specNet)));
+      score += 22 + flowRatio * 6;
+    }
+    if (macroContradicts) {
+      score += 16 + Math.min(6, Math.abs(macroScore) * 3);
+    }
+    if (isCrowded && commOpposesSpec) {
+      score += 5;
+    }
+
+    const squeezeScore = Math.max(0, Math.min(100, Math.round(score)));
+    const direction = isCrowdedLong
+      ? 'LONG LIQUIDATION RISK'
+      : isCrowdedShort
+      ? 'SHORT SQUEEZE RISK'
+      : 'BALANCED';
+    const highAlert = isCrowded && (flowReversing || macroContradicts);
+
+    let alignmentLabel = 'Neutral / Balanced';
+    if (highAlert && macroContradicts && flowReversing) {
+      alignmentLabel = 'Contrarian Alert: Flow Reversing + Macro Contradicts Crowd';
+    } else if (highAlert && macroContradicts) {
+      alignmentLabel = 'Contrarian Warning: Macro Score Contradicts Crowded Specs';
+    } else if (highAlert && flowReversing) {
+      alignmentLabel = 'Contrarian Warning: Weekly Flow Unwinding Crowded Specs';
+    } else if (isCrowded) {
+      alignmentLabel = 'Crowded Extreme (Aligned w/ Macro — Watch for Reversal)';
+    } else if (okN(macroScore) && Math.abs(macroScore) >= 0.35) {
+      alignmentLabel = Math.sign(macroScore) === Math.sign(specNet)
+        ? 'Aligned w/ Fundamentals'
+        : 'Divergent vs. Fundamentals';
+    }
+
+    return {
+      cur: c,
+      available: true,
+      specNet,
+      commNet,
+      commEstimated,
+      wowChange,
+      netPctOi,
+      crowdingPct,
+      macroScore,
+      squeezeScore,
+      direction,
+      highAlert,
+      flowReversing,
+      macroContradicts,
+      alignmentLabel,
+      observationDate: raw.observationDate || raw.date || null,
+      stale: !!raw.stale
+    };
+  });
+
+  const active = list.filter(x => x.available);
+  const ranked = [...active].sort(
+    (a, b) => (b.highAlert ? 1 : 0) - (a.highAlert ? 1 : 0) || b.squeezeScore - a.squeezeScore
+  );
+  const topCandidates = ranked.filter(x => x.direction !== 'BALANCED' || x.squeezeScore >= 45).slice(0, 3);
+  const topAlert = ranked.find(x => x.highAlert) || topCandidates[0] || null;
+  const highAlertCount = active.filter(x => x.highAlert).length;
+
+  return {
+    list,
+    ranked,
+    byCur: Object.fromEntries(list.map(x => [x.cur, x])),
+    topCandidates,
+    topAlert,
+    highAlertCount,
+    availableCount: active.length
+  };
+}
+
+function InstitutionalSqueezeRadarCard({ data, onOpenScore }) {
+  if (!data) return null;
+  const sortedRows = [...data.list].sort((a, b) => {
+    if (a.available !== b.available) return a.available ? -1 : 1;
+    return b.squeezeScore - a.squeezeScore;
+  });
+
+  return (
+    <Card
+      title='Institutional Exposure & Squeeze Radar (CFTC COT)'
+      style={{ borderColor: data.highAlertCount > 0 ? C.warn : C.line }}
+      right={
+        <Tag
+          text={
+            data.highAlertCount > 0
+              ? `⚡ ${data.highAlertCount} High Squeeze Alert${data.highAlertCount > 1 ? 's' : ''}`
+              : `${data.availableCount} Contracts Tracked`
+          }
+          bg={data.highAlertCount > 0 ? C.warnBg : C.bg}
+          fg={data.highAlertCount > 0 ? C.warnTx : C.ac}
+          border={data.highAlertCount > 0 ? C.warn : C.line}
+          style={{ marginRight: 0, marginBottom: 0 }}
+        />
+      }
+    >
+      {data.availableCount === 0 ? (
+        <T s={12} c={C.mut}>Waiting for CFTC Commitments of Traders feed (/api/cot)…</T>
+      ) : (
+        <>
+          {/* Top Squeeze Candidates Ranked by Squeeze Risk Score */}
+          {data.topCandidates.length > 0 && (
+            <View style={{ backgroundColor: C.bg, borderRadius: 8, padding: 9, marginBottom: 10, borderWidth: 1, borderColor: data.highAlertCount > 0 ? C.warn : C.line }}>
+              <T s={10} c={C.warnTx} w='800' style={{ marginBottom: 6 }}>TOP SQUEEZE CANDIDATES (RANKED 0–100)</T>
+              {data.topCandidates.map(it => {
+                const st = squeezeBadgeStyle(it.direction, it.highAlert);
+                return (
+                  <TouchableOpacity
+                    key={it.cur}
+                    onPress={() => CUR.includes(it.cur) && onOpenScore && onOpenScore(it.cur)}
+                    style={{ paddingVertical: 5, borderTopWidth: 1, borderTopColor: 'rgba(30,42,82,0.6)' }}
+                  >
+                    <Row>
+                      <Row style={{ justifyContent: 'flex-start', flexWrap: 'wrap', flex: 1 }}>
+                        <T s={13} w='800' style={{ width: 38 }}>{it.cur}</T>
+                        <Tag text={it.direction} bg={st.bg} fg={st.fg} border={st.border} style={{ marginBottom: 0 }} />
+                        {it.highAlert && <Tag text='CONTRARIAN' bg={C.warnBg} fg={C.warnTx} border={C.warn} style={{ marginBottom: 0 }} />}
+                      </Row>
+                      <T s={13} w='800' c={it.squeezeScore >= 65 ? C.warn : C.tx}>{it.squeezeScore}/100</T>
+                    </Row>
+                    <T s={10} c={C.mut} style={{ marginTop: 2 }}>
+                      Crowding {it.crowdingPct}% · Spec {fmtCotContracts(it.specNet)} (WoW {fmtCotContracts(it.wowChange)}) · {it.alignmentLabel}
+                    </T>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
+
+          {/* Full Contract Comparison Table & Crowding Bars */}
+          <Row style={{ paddingBottom: 5, borderBottomWidth: 1, borderBottomColor: C.line }}>
+            <T s={10} c={C.mut} w='800' style={{ width: 36 }}>CCY</T>
+            <T s={10} c={C.mut} w='800' style={{ flex: 1, textAlign: 'right' }}>SPEC NET</T>
+            <T s={10} c={C.mut} w='800' style={{ flex: 1, textAlign: 'right' }}>COMM NET</T>
+            <T s={10} c={C.mut} w='800' style={{ flex: 0.9, textAlign: 'right' }}>Δ WoW</T>
+            <T s={10} c={C.mut} w='800' style={{ width: 52, textAlign: 'right' }}>CROWD</T>
+            <T s={10} c={C.mut} w='800' style={{ width: 46, textAlign: 'right' }}>SQZ</T>
+          </Row>
+
+          {sortedRows.map(r => {
+            const st = squeezeBadgeStyle(r.direction, r.highAlert);
+            const barColor = !r.available ? C.mut : r.crowdingPct >= 75 ? C.dn : r.crowdingPct <= 25 ? C.up : C.ac;
+            return (
+              <TouchableOpacity
+                key={r.cur}
+                onPress={() => CUR.includes(r.cur) && onOpenScore && onOpenScore(r.cur)}
+                style={{
+                  paddingVertical: 7,
+                  borderBottomWidth: 1,
+                  borderBottomColor: 'rgba(30,42,82,0.55)',
+                  backgroundColor: r.highAlert ? 'rgba(245,158,11,0.06)' : 'transparent'
+                }}
+              >
+                <Row>
+                  <T s={12} w='800' c={r.available ? C.tx : C.mut} style={{ width: 36 }}>{r.cur}</T>
+                  <T s={11} w='700' c={r.available ? col(r.specNet) : C.mut} style={{ flex: 1, textAlign: 'right' }}>
+                    {fmtCotContracts(r.specNet)}
+                  </T>
+                  <T s={11} c={r.available ? col(r.commNet) : C.mut} style={{ flex: 1, textAlign: 'right' }}>
+                    {r.available ? `${r.commEstimated ? '~' : ''}${fmtCotContracts(r.commNet)}` : '—'}
+                  </T>
+                  <T s={11} w='700' c={okN(r.wowChange) ? col(r.wowChange) : C.mut} style={{ flex: 0.9, textAlign: 'right' }}>
+                    {fmtCotContracts(r.wowChange)}
+                  </T>
+                  <T s={11} w='800' c={barColor} style={{ width: 52, textAlign: 'right' }}>
+                    {okN(r.crowdingPct) ? `${r.crowdingPct}%` : '—'}
+                  </T>
+                  <T s={11} w='800' c={r.highAlert ? C.warn : r.squeezeScore >= 50 ? C.ac : C.mut} style={{ width: 46, textAlign: 'right' }}>
+                    {r.available ? r.squeezeScore : '—'}
+                  </T>
+                </Row>
+
+                {r.available ? (
+                  <>
+                    <View style={{ height: 5, backgroundColor: C.bg, borderRadius: 3, overflow: 'hidden', marginTop: 4, borderWidth: 1, borderColor: C.line }}>
+                      <View style={{ width: `${r.crowdingPct}%`, height: '100%', backgroundColor: barColor }} />
+                    </View>
+                    <Row style={{ marginTop: 4 }}>
+                      <T s={10} c={r.highAlert ? C.warnTx : C.mut} style={{ flex: 1, paddingRight: 6 }} numberOfLines={1}>
+                        {r.alignmentLabel}{okN(r.macroScore) ? ` (Macro ${signedF2(r.macroScore)})` : ''}
+                      </T>
+                      <Tag text={r.direction} bg={st.bg} fg={st.fg} border={st.border} style={{ marginRight: 0, marginBottom: 0 }} />
+                    </Row>
+                  </>
+                ) : (
+                  <T s={10} c={C.mut} style={{ marginTop: 2 }}>{r.alignmentLabel}</T>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+
+          <T s={10} c={C.mut} style={{ marginTop: 7 }}>
+            Crowding ≥75% triggers Long Liquidation watch; ≤25% triggers Short Squeeze watch. Contrarian alerts fire when WoW flow unwinds or macro score contradicts crowded specs. (~Comm = zero-sum hedger offset when raw commercial columns are omitted).
+          </T>
+        </>
+      )}
+    </Card>
+  );
+}
+// == END INSERT: FEATURE C ==
 function Fundamentals({ A, fx, cot, dash, onOpenScore }) {
   const [focusCur, setFocusCur] = useState('ALL');
   const cbExp = useMemo(() => computeCentralBankExpectations(A, fx, dash), [A, fx, dash]);
+  const squeezeData = useMemo(() => computeInstitutionalSqueeze(cot, fx), [cot, fx]);
   if (!fx) return <Wait />;
   const D = fx.data || {};
   const K = cot?.data || {};
@@ -1626,6 +1978,7 @@ function Fundamentals({ A, fx, cot, dash, onOpenScore }) {
 
       <Pills opts={[['ALL', 'All G8'], ...CUR.map(c => [c, c])]} val={focusCur} set={setFocusCur} />
 <CentralBankExpectationsCard data={cbExp} onOpenScore={onOpenScore} />
+    <InstitutionalSqueezeRadarCard data={squeezeData} onOpenScore={onOpenScore} />
       {list.map(c => {
         const d = D[c] || {};
         const sc = fx.scores?.[c];
@@ -4248,7 +4601,7 @@ export default function App() {
       refreshControl={<RefreshControl refreshing={busy} onRefresh={() => refresh(true)} tintColor={C.ac} colors={[C.ac]} />}
     >
       {(tab === 0 || tab === 4) && <NextHigh cal={cal} />}
-      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} dash={dash} assets={assets} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
+      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} dash={dash} assets={assets} cot={cot} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
       {tab === 9 && <SwingIntel intel={intel} onOpenScore={setScoreModalCur} />}
       {tab === 1 && <Fundamentals A={A} fx={fx} cot={cot} onOpenScore={setScoreModalCur} />}
       {tab === 2 && <Scanner A={A} fx={fx} cot={cot} intel={intel} gold={gold} send={sendToRisk} onOpenScore={setScoreModalCur} />}
