@@ -319,7 +319,8 @@ const MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
 const TV_CUR={US:'USD',EU:'EUR',DE:'EUR',FR:'EUR',IT:'EUR',ES:'EUR',GB:'GBP',JP:'JPY',CH:'CHF',CA:'CAD',AU:'AUD',NZ:'NZD'};
 const IST_OFF=5.5*36e5;
 
-async function firstJson(urls){let e;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2))}catch(x){e=x}}throw e}
+async function firstJson(urls){let err;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36','Accept':'application/json'}},8))}catch(e){err=e}}throw err||new Error('No JSON source');}
+
 
 function parseCalNum(s){
   if(s==null||s==='')return NaN;
