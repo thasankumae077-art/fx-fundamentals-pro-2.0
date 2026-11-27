@@ -817,7 +817,8 @@ function NextHigh({ cal }) {
 // 7. OVERVIEW & CONSOLIDATED MACRO EXECUTIVE DASHBOARD (PRIORITY 1, 3, 5)
 // ============================================================================
 
-function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate }) {
+function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, cal }) {
+  const surprises = useMemo(() => computeEconomicSurprises(cal), [cal]);
   const [strTf, setStrTf] = useState(21);
   const [corrWin, setCorrWin] = useState('60D');
   const [methodOpen, setMethodOpen] = useState(false);
@@ -889,7 +890,38 @@ function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate }) 
             </Row>
           </View>
         </View>
-
+<View style={{ marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.line, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
+            <T s={10} c={C.mut} w='800' style={{ marginRight: 8 }}>ECONOMIC SURPRISE LEADERS:</T>
+            <TouchableOpacity onPress={() => onNavigate(7)}>
+              <Tag
+                text={
+                  surprises.topPositive
+                    ? `▲ #1 Beat: ${surprises.topPositive.cur} (+${surprises.topPositive.score} · ${surprises.topPositive.beats}B/${surprises.topPositive.misses}M)`
+                    : '▲ #1 Beat: Pending Actuals'
+                }
+                bg={surprises.topPositive ? C.upBg : C.line}
+                fg={surprises.topPositive ? C.upTx : C.mut}
+                border={surprises.topPositive ? C.up : C.line}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => onNavigate(7)}>
+              <Tag
+                text={
+                  surprises.topNegative
+                    ? `▼ #1 Miss: ${surprises.topNegative.cur} (${surprises.topNegative.score} · ${surprises.topNegative.beats}B/${surprises.topNegative.misses}M)`
+                    : '▼ #1 Miss: Pending Actuals'
+                }
+                bg={surprises.topNegative ? C.dnBg : C.line}
+                fg={surprises.topNegative ? C.dnTx : C.mut}
+                border={surprises.topNegative ? C.dn : C.line}
+              />
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity onPress={() => onNavigate(7)}>
+            <T s={10} c={C.ac} w='700'>Surprise Tracker →</T>
+          </TouchableOpacity>
+        </View>
         {!!exec?.upcomingHighImpact?.length && (
           <View style={{ marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.line }}>
             <Row style={{ marginBottom: 4 }}>
@@ -2086,6 +2118,216 @@ const verdictCal = e => {
   if (isNaN(a) || isNaN(f) || a === f) return 0;
   return ((a > f) !== INV_RX.test(e.title)) ? 1 : -1;
 };
+const SURPRISE_CUR = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD'];
+const SURPRISE_INV_RX = /unemployment|initial jobless|continuing.*claims|jobless claims|jobless|claims|deficit|insolvenc|bankruptc|layoff/i;
+
+function parseSurpriseVal(raw) {
+  if (raw == null || raw === '') return null;
+  const s = String(raw).trim();
+  const isPct = s.includes('%');
+  const cleaned = s.replace(/[€£¥$,\s]/g, '');
+  const m = cleaned.match(/^([+-]?[\d.]+)\s*([KMBT%]?)/i);
+  if (!m) return null;
+  const base = parseFloat(m[1]);
+  if (isNaN(base)) return null;
+  const mult = { K: 1e3, M: 1e6, B: 1e9, T: 1e12 }[m[2].toUpperCase()] || 1;
+  return { val: base * mult, isPct };
+}
+
+function fmtSurpriseMag(rawDiff, isPct, isInverted) {
+  if (rawDiff === 0) return '0';
+  const abs = Math.abs(rawDiff);
+  let body;
+  if (isPct) body = `${Number(abs.toFixed(abs < 0.05 ? 3 : 2))}%`;
+  else if (abs >= 1e12) body = `${Number((abs / 1e12).toFixed(2))}T`;
+  else if (abs >= 1e9) body = `${Number((abs / 1e9).toFixed(2))}B`;
+  else if (abs >= 1e6) body = `${Number((abs / 1e6).toFixed(2))}M`;
+  else if (abs >= 1e3) body = `${Number((abs / 1e3).toFixed(1))}K`;
+  else body = `${Number(abs.toFixed(2))}`;
+
+  if (isInverted) return `${body}${rawDiff < 0 ? '↓' : '↑'}`;
+  return `${rawDiff > 0 ? '+' : '-'}${body}`;
+}
+
+function surpriseEventKey(e) {
+  return e.id || `${e.currency}|${e.timestamp}|${e.title}`;
+}
+
+function computeEconomicSurprises(cal) {
+  const map = {};
+  SURPRISE_CUR.forEach(c => {
+    map[c] = {
+      cur: c,
+      score: 0,
+      beats: 0,
+      misses: 0,
+      inline: 0,
+      total: 0,
+      weightedSum: 0,
+      weightTotal: 0,
+      topDriver: null,
+      _topWeight: -1
+    };
+  });
+
+  const byKey = {};
+  let totalScored = 0;
+
+  for (const e of (cal?.items || [])) {
+    const cur = String(e.currency || '').toUpperCase();
+    if (!map[cur]) continue;
+
+    const a = parseSurpriseVal(e.actual);
+    const f = parseSurpriseVal(e.forecast);
+    if (!a || !f) continue;
+
+    const rawDiff = a.val - f.val;
+    const isInverted = SURPRISE_INV_RX.test(e.title || '');
+    const signedDiff = isInverted ? -rawDiff : rawDiff;
+    const dir = Math.sign(signedDiff);
+    const status = dir > 0 ? 'BEAT' : dir < 0 ? 'MISS' : 'INLINE';
+
+    // High-impact = 2x, Medium-impact = 1x, Low-impact = 0.5x
+    const weight = e.impact === 'High' ? 2 : e.impact === 'Medium' ? 1 : 0.5;
+    const denom = Math.max(Math.abs(f.val), a.isPct ? 0.25 : 1);
+    const relMag = Math.min(1, Math.abs(signedDiff) / denom);
+    const intensity = dir === 0 ? 0 : dir * (0.55 + 0.45 * relMag);
+
+    const magLabel = fmtSurpriseMag(rawDiff, a.isPct || f.isPct, isInverted);
+    const entry = {
+      status,
+      dir,
+      weight,
+      isInverted,
+      magLabel,
+      title: e.title,
+      actual: e.actual,
+      forecast: e.forecast,
+      impact: e.impact
+    };
+
+    byKey[surpriseEventKey(e)] = entry;
+    totalScored++;
+
+    const bucket = map[cur];
+    bucket.total++;
+    if (status === 'BEAT') bucket.beats++;
+    else if (status === 'MISS') bucket.misses++;
+    else bucket.inline++;
+
+    bucket.weightedSum += weight * intensity;
+    bucket.weightTotal += weight;
+
+    const driverScore = weight * Math.abs(intensity);
+    if (status !== 'INLINE' && driverScore > bucket._topWeight) {
+      bucket._topWeight = driverScore;
+      bucket.topDriver = entry;
+    }
+  }
+
+  const list = SURPRISE_CUR.map(c => {
+    const b = map[c];
+    const normalized = b.weightTotal > 0
+      ? Math.max(-100, Math.min(100, Math.round((b.weightedSum / b.weightTotal) * 100)))
+      : 0;
+    return {
+      cur: b.cur,
+      score: normalized,
+      beats: b.beats,
+      misses: b.misses,
+      inline: b.inline,
+      total: b.total,
+      topDriver: b.topDriver
+    };
+  });
+
+  const ranked = list.filter(x => x.total > 0).sort((a, b) => b.score - a.score);
+  const topPositive = ranked.find(x => x.score > 0) || null;
+  const topNegative = [...ranked].reverse().find(x => x.score < 0) || null;
+
+  return {
+    list,
+    byCur: Object.fromEntries(list.map(x => [x.cur, x])),
+    byKey,
+    topPositive,
+    topNegative,
+    totalScored
+  };
+}
+
+function G8SurpriseTrackerCard({ data }) {
+  if (!data) return null;
+  const sorted = [...data.list].sort((a, b) => b.score - a.score || b.total - a.total);
+
+  return (
+    <Card
+      title='G8 Economic Surprise Tracker (Citi-Style · -100 to +100)'
+      right={
+        <Tag
+          text={`${data.totalScored} Released Event${data.totalScored === 1 ? '' : 's'} Scored`}
+          bg={C.bg}
+          fg={C.ac}
+          border={C.line}
+          style={{ marginRight: 0, marginBottom: 0 }}
+        />
+      }
+    >
+      {data.totalScored === 0 ? (
+        <T s={12} c={C.mut}>
+          No released events with both Actual and Forecast values in this date range yet. Switch to "Past Releases" or wait for scheduled actuals.
+        </T>
+      ) : (
+        <>
+          <Row style={{ paddingBottom: 5, borderBottomWidth: 1, borderBottomColor: C.line }}>
+            <T s={10} c={C.mut} w='800' style={{ width: 36 }}>CCY</T>
+            <T s={10} c={C.mut} w='800' style={{ flex: 1, textAlign: 'center' }}>SURPRISE INDEX (-100 ◀ | ▶ +100)</T>
+            <T s={10} c={C.mut} w='800' style={{ width: 46, textAlign: 'right' }}>SCORE</T>
+            <T s={10} c={C.mut} w='800' style={{ width: 68, textAlign: 'right' }}>B / M / I</T>
+          </Row>
+
+          {sorted.map(row => {
+            const barW = Math.min(100, Math.abs(row.score));
+            const isPos = row.score > 0;
+            const isNeg = row.score < 0;
+            const scCol = isPos ? C.up : isNeg ? C.dn : C.mut;
+            return (
+              <View key={row.cur} style={{ paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: 'rgba(30,42,82,0.5)' }}>
+                <Row>
+                  <T s={12} w='800' style={{ width: 36 }}>{row.cur}</T>
+                  <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', height: 12, marginHorizontal: 8 }}>
+                    <View style={{ flex: 1, alignItems: 'flex-end', backgroundColor: C.bg, height: 10, borderTopLeftRadius: 3, borderBottomLeftRadius: 3, overflow: 'hidden' }}>
+                      {isNeg && <View style={{ width: `${barW}%`, height: 10, backgroundColor: C.dn }} />}
+                    </View>
+                    <View style={{ width: 1, height: 14, backgroundColor: C.line }} />
+                    <View style={{ flex: 1, alignItems: 'flex-start', backgroundColor: C.bg, height: 10, borderTopRightRadius: 3, borderBottomRightRadius: 3, overflow: 'hidden' }}>
+                      {isPos && <View style={{ width: `${barW}%`, height: 10, backgroundColor: C.up }} />}
+                    </View>
+                  </View>
+                  <T s={12} w='800' c={scCol} style={{ width: 46, textAlign: 'right' }}>
+                    {row.total ? `${row.score > 0 ? '+' : ''}${row.score}` : '—'}
+                  </T>
+                  <T s={11} c={C.mut} style={{ width: 68, textAlign: 'right' }}>
+                    <T s={11} w='700' c={C.up}>{row.beats}</T>/
+                    <T s={11} w='700' c={C.dn}>{row.misses}</T>/
+                    <T s={11} c={C.mut}>{row.inline}</T>
+                  </T>
+                </Row>
+                {row.topDriver && (
+                  <T s={10} c={C.mut} style={{ marginTop: 2, marginLeft: 36 }} numberOfLines={1}>
+                    Top driver: <T s={10} w='700' c={row.topDriver.status === 'BEAT' ? C.up : C.dn}>{row.topDriver.status} {row.topDriver.magLabel}</T> · {row.topDriver.title}
+                  </T>
+                )}
+              </View>
+            );
+          })}
+          <T s={10} c={C.mut} style={{ marginTop: 6 }}>
+            Weighted 2x High-Impact / 1x Medium-Impact. Inverted polarity applied to Unemployment &amp; Jobless Claims (lower actual = positive surprise).
+          </T>
+        </>
+      )}
+    </Card>
+  );
+}
 const istMid = t => { const d = ist(t); return Date.UTC(d.y, d.mon, d.day) - IST; };
 const istDayId = t => { const d = ist(t); return `${d.y}-${p2(d.mon + 1)}-${p2(d.day)}`; };
 const sunStart = t => { const m0 = istMid(t), d = ist(m0); return m0 - d.wd * DAY_MS; };
@@ -2253,7 +2495,7 @@ function EconCalendar({ cal, refreshTick = 0 }) {
     return weeks;
   }, [pickYear, pickMon, activeSun, today0]);
 
-  const items = viewCal?.items || [];
+  const items = viewCal?.items || []; const surpriseData = useMemo(() => computeEconomicSurprises(viewCal || cal), [viewCal, cal]);
   const filtered = items.filter(e => {
     if (cur !== 'ALL' && e.currency !== cur) return false;
     if (imp !== 'ALL' && e.impact !== imp) return false;
@@ -2293,7 +2535,7 @@ function EconCalendar({ cal, refreshTick = 0 }) {
   return (
     <>
       <T s={24} w='800'>Economic Calendar</T>
-      <Note>All times in IST (Asia/Kolkata). Powered dynamically by TradingView &amp; FXStreet for any past or future date range. Active feed: {viewCal?.provider || 'Loading…'}.{viewCal?.stale ? ' (STALE cache)' : ''}</Note>
+      <Note>All times in IST (Asia/Kolkata). Powered dynamically by TradingView &amp; FXStreet for any past or future date range. Active feed: {viewCal?.provider || 'Loading…'}.{viewCal?.stale ? ' (STALE cache)' : ''}</Note><G8SurpriseTrackerCard data={surpriseData} />
 
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 10, marginBottom: 10 }}>
         <TouchableOpacity onPress={() => shiftWeek(-1)} style={{ paddingHorizontal: 12, paddingVertical: 6, backgroundColor: C.bg, borderRadius: 8, borderWidth: 1, borderColor: C.line }}><T s={14} w='800'>‹</T></TouchableOpacity>
@@ -2387,7 +2629,25 @@ function EconCalendar({ cal, refreshTick = 0 }) {
                         <T s={12} w='700' c={past ? C.mut : C.tx} style={{ width: W.time }}>{e.time || `${p2(d.h)}:${p2(d.m)}`}</T>
                         <View style={{ width: W.cur, alignItems: 'center' }}><View style={{ backgroundColor: C.bg, borderWidth: 1, borderColor: C.line, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}><T s={11} w='800' c={C.ac}>{e.currency}</T></View></View>
                         <View style={{ width: W.imp, alignItems: 'center' }}><ImpactFolder impact={e.impact} /></View>
-                        <View style={{ flex: 1, paddingHorizontal: 6 }}><T s={13} w={e.impact === 'High' ? '700' : '400'}>{e.title}</T></View>
+                  
+                        <View style={{ flex: 1, paddingHorizontal: 6, flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                          <T s={13} w={e.impact === 'High' ? '700' : '400'} style={{ marginRight: 6 }}>{e.title}</T>
+                          {(() => {
+                            const sp = surpriseData.byKey[surpriseEventKey(e)];
+                            if (!sp) return null;
+                            const bg = sp.status === 'BEAT' ? C.upBg : sp.status === 'MISS' ? C.dnBg : C.line;
+                            const fg = sp.status === 'BEAT' ? C.upTx : sp.status === 'MISS' ? C.dnTx : C.mut;
+                            const bd = sp.status === 'BEAT' ? C.up : sp.status === 'MISS' ? C.dn : C.line;
+                            return (
+                              <View style={{ backgroundColor: bg, borderWidth: 1, borderColor: bd, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1 }}>
+                                <T s={9} w='800' c={fg}>
+                                  {sp.status}{sp.status !== 'INLINE' ? ` ${sp.magLabel}` : ''}
+                                </T>
+                              </View>
+                            );
+                          })()}
+                        </View>
+
                         <TouchableOpacity onPress={() => setOpenKey(isOpen ? null : rKey)} style={{ width: W.det, alignItems: 'center' }}><View style={{ backgroundColor: isOpen ? C.ac : C.bg, borderRadius: 6, borderWidth: 1, borderColor: isOpen ? C.ac : C.line, paddingHorizontal: 6, paddingVertical: 2 }}><T s={12}>📄</T></View></TouchableOpacity>
                         <T s={13} w='800' c={actColor} style={{ width: W.act, textAlign: 'right' }}>{hasAct ? e.actual : '—'}</T>
                         <T s={12} style={{ width: W.fcst, textAlign: 'right' }}>{e.forecast || '—'}</T>
@@ -3388,7 +3648,7 @@ export default function App() {
       refreshControl={<RefreshControl refreshing={busy} onRefresh={() => refresh(true)} tintColor={C.ac} colors={[C.ac]} />}
     >
       {(tab === 0 || tab === 4) && <NextHigh cal={cal} />}
-      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
+      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
       {tab === 9 && <SwingIntel intel={intel} onOpenScore={setScoreModalCur} />}
       {tab === 1 && <Fundamentals fx={fx} cot={cot} onOpenScore={setScoreModalCur} />}
       {tab === 2 && <Scanner A={A} fx={fx} cot={cot} intel={intel} gold={gold} send={sendToRisk} onOpenScore={setScoreModalCur} />}
