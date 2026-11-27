@@ -2763,23 +2763,430 @@ function journalStats(t) {
   r.forEach(x => { e += x; pk = Math.max(pk, e); dd = Math.max(dd, pk - e); });
   return { n: r.length, wr: r.length ? (r.filter(x => x > 0).length / r.length) * 100 : 0, tot: sum(r), pf: l ? w / l : w ? Infinity : 0, ex: r.length ? sum(r) / r.length : 0, dd };
 }
+// == START INSERT: FEATURE E (PORTFOLIO EXPOSURE & CORRELATION GUARDRAIL) ==
+const EXPOSURE_CUR = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD', 'XAU'];
 
-function Journal({ trades, setTrades }) {
-  const [p, setP] = useState({ pair: '', side: 'LONG', r: '', thesis: '' });
+const WHATIF_PRESETS = [
+  {
+    label: 'USD Stack (+2x USD)',
+    trades: [
+      { id: 'sim1', pair: 'USD/CHF', side: 'LONG', lots: 1.0, riskPct: 1.0, status: 'OPEN' },
+      { id: 'sim2', pair: 'USD/CAD', side: 'LONG', lots: 1.0, riskPct: 1.0, status: 'OPEN' }
+    ]
+  },
+  {
+    label: 'Gold + EUR Short-USD',
+    trades: [
+      { id: 'sim3', pair: 'XAU/USD', side: 'LONG', lots: 1.0, riskPct: 1.0, status: 'OPEN' },
+      { id: 'sim4', pair: 'EUR/USD', side: 'LONG', lots: 1.0, riskPct: 1.0, status: 'OPEN' }
+    ]
+  },
+  {
+    label: 'Diversified FX',
+    trades: [
+      { id: 'sim5', pair: 'EUR/USD', side: 'LONG', lots: 1.0, riskPct: 1.0, status: 'OPEN' },
+      { id: 'sim6', pair: 'AUD/JPY', side: 'LONG', lots: 1.0, riskPct: 1.0, status: 'OPEN' }
+    ]
+  }
+];
+
+function decomposeTradePair(rawPair) {
+  const meta = resolveSymbol(rawPair);
+  if (meta && EXPOSURE_CUR.includes(meta.base) && EXPOSURE_CUR.includes(meta.quote)) {
+    return { sym: meta.sym, base: meta.base, quote: meta.quote, type: meta.type };
+  }
+  const clean = String(rawPair || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (clean.length === 6) {
+    const b = clean.slice(0, 3), q = clean.slice(3, 6);
+    if (EXPOSURE_CUR.includes(b) && EXPOSURE_CUR.includes(q) && b !== q) {
+      return { sym: `${b}/${q}`, base: b, quote: q, type: b === 'XAU' || q === 'XAU' ? 'METAL' : 'FX' };
+    }
+  }
+  return null;
+}
+
+function pairCorr30D(d1, d2, A, assets) {
+  if (d1.sym === d2.sym) return { corr: 1.0, source: 'Identical Pair' };
+  const M30 = A?.correlations?.['30D'];
+
+  // 1. Direct 30D log-return correlation for FX-to-FX pairs from ECB history series
+  if (d1.type === 'FX' && d2.type === 'FX' && A?.series) {
+    const s1 = A.series(d1.base, d1.quote);
+    const s2 = A.series(d2.base, d2.quote);
+    if (s1?.length >= 31 && s2?.length >= 31) {
+      const r1 = [], r2 = [];
+      const a1 = s1.slice(-31), a2 = s2.slice(-31);
+      for (let i = 1; i < a1.length; i++) {
+        r1.push(Math.log(a1[i] / a1[i - 1]));
+        r2.push(Math.log(a2[i] / a2[i - 1]));
+      }
+      return { corr: Number(cor(r1, r2).toFixed(2)), source: '30D FX Returns' };
+    }
+  }
+
+  // 2. Fallback / XAU cross-check using live 30D currency correlation matrix + Gold/DXY 30D corr
+  if (!M30) return null;
+  const goldVsUsd = assets?.crossAssetDrivers?.gold?.corrVsDxy?.['30D'] ?? -0.55;
+  const cCorr = (x, y) => {
+    if (x === y) return 1;
+    const ix = CUR.indexOf(x), iy = CUR.indexOf(y);
+    if (ix >= 0 && iy >= 0) return M30[ix]?.[iy] ?? 0;
+    const fxCur = x === 'XAU' ? y : x;
+    const iFx = CUR.indexOf(fxCur), iUsd = CUR.indexOf('USD');
+    if (fxCur === 'USD') return goldVsUsd;
+    if (iFx >= 0 && iUsd >= 0) return Number((goldVsUsd * (M30[iFx]?.[iUsd] ?? 0)).toFixed(2));
+    return 0;
+  };
+
+  const num = cCorr(d1.base, d2.base) - cCorr(d1.base, d2.quote) - cCorr(d1.quote, d2.base) + cCorr(d1.quote, d2.quote);
+  const den = Math.sqrt(Math.max(0.0001, (2 - 2 * cCorr(d1.base, d1.quote)) * (2 - 2 * cCorr(d2.base, d2.quote))));
+  return {
+    corr: Number(Math.max(-1, Math.min(1, num / den)).toFixed(2)),
+    source: d1.base === 'XAU' || d2.base === 'XAU' ? '30D Matrix + Gold/DXY' : '30D Currency Matrix'
+  };
+}
+
+function analyzePortfolioExposure(activeTrades, A, assets) {
+  const map = {};
+  EXPOSURE_CUR.forEach(c => {
+    map[c] = { cur: c, netCount: 0, netLots: 0, netRiskPct: 0, grossRiskPct: 0, sharePct: 0 };
+  });
+
+  const parsed = [];
+  let totalOpenRiskPct = 0;
+  let totalLots = 0;
+
+  (activeTrades || []).forEach(t => {
+    const dec = decomposeTradePair(t.pair);
+    if (!dec) return;
+    const dir = String(t.side || 'LONG').toUpperCase() === 'SHORT' ? -1 : 1;
+    const lots = Math.max(0.01, parseFloat(t.lots) || 1.0);
+    const riskPct = Math.max(0.1, parseFloat(t.riskPct) || 1.0);
+
+    totalOpenRiskPct += riskPct;
+    totalLots += lots;
+    parsed.push({ ...t, ...dec, dir, lots, riskPct });
+
+    map[dec.base].netCount += dir;
+    map[dec.base].netLots += dir * lots;
+    map[dec.base].netRiskPct += dir * riskPct;
+    map[dec.base].grossRiskPct += riskPct;
+
+    map[dec.quote].netCount -= dir;
+    map[dec.quote].netLots -= dir * lots;
+    map[dec.quote].netRiskPct -= dir * riskPct;
+    map[dec.quote].grossRiskPct += riskPct;
+  });
+
+  const rows = EXPOSURE_CUR.map(c => map[c]);
+  const totalAbsNetRisk = sum(rows.map(r => Math.abs(r.netRiskPct)));
+  const maxAbsRisk = Math.max(...rows.map(r => Math.abs(r.netRiskPct)), 0.01);
+
+  const warnings = [];
+  rows.forEach(r => {
+    r.sharePct = totalAbsNetRisk > 0 ? (Math.abs(r.netRiskPct) / totalAbsNetRisk) * 100 : 0;
+    if (parsed.length >= 2 && r.sharePct > 40) {
+      warnings.push({
+        severity: r.sharePct >= 50 ? 'RED' : 'AMBER',
+        type: 'CONCENTRATION',
+        text: `${r.cur} accounts for ${r.sharePct.toFixed(0)}% of net open risk (${r.netCount > 0 ? '+' : ''}${r.netCount}x · ${signedF2(r.netRiskPct)}% risk · ${signedF2(r.netLots)} lots) — exceeds 40% limit.`
+      });
+    }
+  });
+
+  const pairCorrs = [];
+  for (let i = 0; i < parsed.length; i++) {
+    for (let j = i + 1; j < parsed.length; j++) {
+      const t1 = parsed[i], t2 = parsed[j];
+      const res = pairCorr30D(t1, t2, A, assets);
+      if (!res) continue;
+      const dirCorr = Number((t1.dir * t2.dir * res.corr).toFixed(2));
+      pairCorrs.push({ a: t1, b: t2, rawCorr: res.corr, dirCorr, source: res.source });
+
+      if (dirCorr > 0.70) {
+        warnings.push({
+          severity: dirCorr >= 0.80 ? 'RED' : 'AMBER',
+          type: 'CORRELATION',
+          text: `High 30D Stacked Correlation (${signedF2(dirCorr)}): ${t1.side} ${t1.sym} & ${t2.side} ${t2.sym} move strongly together (${res.source}) — directional risk is compounded.`
+        });
+      } else if (Math.abs(res.corr) > 0.70 && dirCorr < -0.70) {
+        warnings.push({
+          severity: 'AMBER',
+          type: 'HEDGE_OVERLAP',
+          text: `Opposing 30D Correlation (${signedF2(res.corr)} raw / ${signedF2(dirCorr)} net): ${t1.side} ${t1.sym} & ${t2.side} ${t2.sym} largely cancel each other out.`
+        });
+      }
+    }
+  }
+
+  return {
+    parsed,
+    rows,
+    totalOpenRiskPct,
+    totalLots,
+    maxAbsRisk,
+    pairCorrs,
+    warnings,
+    hasRed: warnings.some(w => w.severity === 'RED')
+  };
+}
+
+function PortfolioExposureGuardrail({ trades, A, assets }) {
+  const openJournalTrades = useMemo(
+    () => (trades || []).filter(t => t.status === 'OPEN'),
+    [trades]
+  );
+  const [simMode, setSimMode] = useState(false);
+  const [simTrades, setSimTrades] = useState(WHATIF_PRESETS[0].trades);
+  const [simInp, setSimInp] = useState({ pair: 'EUR/USD', side: 'LONG', lots: '1.0', riskPct: '1.0' });
+
+  const usingSim = simMode || openJournalTrades.length === 0;
+  const activeList = usingSim ? simTrades : openJournalTrades;
+  const analysis = useMemo(() => analyzePortfolioExposure(activeList, A, assets), [activeList, A, assets]);
+
+  const addSimTrade = () => {
+    const dec = decomposeTradePair(simInp.pair);
+    if (!dec) return;
+    setSimTrades(prev => [
+      ...prev,
+      {
+        id: 'sim_' + Date.now(),
+        pair: dec.sym,
+        side: simInp.side,
+        lots: Math.max(0.01, parseFloat(simInp.lots) || 1.0),
+        riskPct: Math.max(0.1, parseFloat(simInp.riskPct) || 1.0),
+        status: 'OPEN'
+      }
+    ]);
+  };
+
+  return (
+    <Card
+      title='Portfolio Currency Exposure & 30D Correlation Risk Guardrail'
+      style={{ borderColor: analysis.hasRed ? C.dn : analysis.warnings.length ? C.warn : C.line }}
+      right={
+        <TouchableOpacity
+          onPress={() => setSimMode(v => !v)}
+          style={{
+            backgroundColor: usingSim ? C.acBg : C.upBg,
+            paddingHorizontal: 8,
+            paddingVertical: 3,
+            borderRadius: 6
+          }}
+        >
+          <T s={10} w='800' c='#fff'>
+            {usingSim ? (openJournalTrades.length ? 'Mode: What-If Sim ⇄' : 'What-If Simulator (0 Open)') : `Live Open (${openJournalTrades.length}) ⇄`}
+          </T>
+        </TouchableOpacity>
+      }
+    >
+      {/* What-If Simulator Controls (auto-active when 0 open trades, or manually toggled) */}
+      {usingSim && (
+        <View style={{ backgroundColor: C.bg, borderRadius: 8, padding: 9, marginBottom: 10, borderWidth: 1, borderColor: C.line }}>
+          <T s={10} c={C.ac} w='800' style={{ marginBottom: 6 }}>
+            {openJournalTrades.length === 0
+              ? 'NO OPEN JOURNAL TRADES — QUICK WHAT-IF SIMULATION ACTIVE'
+              : 'WHAT-IF PORTFOLIO SIMULATOR (DOES NOT MODIFY SAVED JOURNAL)'}
+          </T>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+            {WHATIF_PRESETS.map(pr => (
+              <TouchableOpacity
+                key={pr.label}
+                onPress={() => setSimTrades(pr.trades)}
+                style={{ backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4, marginRight: 6 }}
+              >
+                <T s={11} w='700'>{pr.label}</T>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity
+              onPress={() => setSimTrades([])}
+              style={{ backgroundColor: C.card, borderWidth: 1, borderColor: C.dn, borderRadius: 12, paddingHorizontal: 9, paddingVertical: 4 }}
+            >
+              <T s={11} w='700' c={C.dn}>Clear</T>
+            </TouchableOpacity>
+          </ScrollView>
+          <Row style={{ marginBottom: 6 }}>
+            <Inp label='Pair / XAU' v={simInp.pair} set={x => setSimInp(s => ({ ...s, pair: x }))} kb='default' ph='USD/CHF' flex={1.4} />
+            <Inp label='Lots' v={simInp.lots} set={x => setSimInp(s => ({ ...s, lots: x }))} ph='1.0' flex={0.7} />
+            <Inp label='Risk %' v={simInp.riskPct} set={x => setSimInp(s => ({ ...s, riskPct: x }))} ph='1.0' flex={0.7} />
+            <Btn
+              small
+              t={simInp.side}
+              on={() => setSimInp(s => ({ ...s, side: s.side === 'LONG' ? 'SHORT' : 'LONG' }))}
+              style={{ alignSelf: 'flex-end', marginRight: 6, backgroundColor: simInp.side === 'LONG' ? C.upBg : C.dnBg }}
+            />
+            <Btn small primary t='+ Sim' on={addSimTrade} style={{ alignSelf: 'flex-end' }} />
+          </Row>
+          {simTrades.length > 0 && (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4 }}>
+              {simTrades.map(st => (
+                <TouchableOpacity
+                  key={st.id}
+                  onPress={() => setSimTrades(prev => prev.filter(x => x.id !== st.id))}
+                  style={{ backgroundColor: st.side === 'LONG' ? C.upBg : C.dnBg, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3, marginRight: 6, marginBottom: 4 }}
+                >
+                  <T s={10} w='800' c={st.side === 'LONG' ? C.upTx : C.dnTx}>
+                    {st.side} {st.pair} ({st.lots}L · {st.riskPct}%) ✕
+                  </T>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Portfolio Risk Summary */}
+      <Row style={{ marginBottom: 8 }}>
+        <T s={11} c={C.mut}>Active Positions: <T w='800'>{analysis.parsed.length}</T></T>
+        <T s={11} c={C.mut}>Total Open Risk: <T w='800' c={analysis.totalOpenRiskPct > 3 ? C.warn : C.tx}>{f2(analysis.totalOpenRiskPct)}%</T></T>
+        <T s={11} c={C.mut}>Gross Lots: <T w='800'>{f2(analysis.totalLots)}</T></T>
+      </Row>
+
+      {/* Concentration & Correlation Warning Callouts */}
+      {analysis.warnings.length > 0 ? (
+        <View
+          style={{
+            backgroundColor: analysis.hasRed ? '#2a0d14' : '#2c1a06',
+            borderWidth: 1,
+            borderColor: analysis.hasRed ? C.dn : C.warn,
+            borderRadius: 8,
+            padding: 9,
+            marginBottom: 10
+          }}
+        >
+          <T s={11} w='800' c={analysis.hasRed ? C.dnTx : C.warnTx}>
+            {analysis.hasRed ? '🚨 CONCENTRATION & CORRELATION RISK ALERT' : '⚠ CONCENTRATION & CORRELATION WARNING'}
+          </T>
+          {analysis.warnings.map((w, idx) => (
+            <T key={idx} s={11} c={w.severity === 'RED' ? C.dnTx : C.warnTx} style={{ marginTop: 4 }}>
+              • [{w.type}] {w.text}
+            </T>
+          ))}
+        </View>
+      ) : analysis.parsed.length >= 2 ? (
+        <View style={{ backgroundColor: '#0d2b1d', borderWidth: 1, borderColor: '#166534', borderRadius: 8, padding: 8, marginBottom: 10 }}>
+          <T s={11} w='700' c={C.upTx}>✓ Portfolio Guardrail Clear: No currency exceeds 40% net exposure and no open pair correlation exceeds 0.70 (30D).</T>
+        </View>
+      ) : (
+        <T s={11} c={C.mut} style={{ marginBottom: 10 }}>
+          {analysis.parsed.length === 1
+            ? 'Single open position (50%/50% base/quote split). Add a 2nd open trade to evaluate multi-pair concentration & 30D correlation overlap.'
+            : 'Add open trades or pick a What-If preset above to inspect decomposed currency exposure.'}
+        </T>
+      )}
+
+      {/* Visual Bi-Directional Bar Chart & Table of Net Currency Exposure */}
+      <Row style={{ paddingBottom: 4, borderBottomWidth: 1, borderBottomColor: C.line }}>
+        <T s={10} c={C.mut} w='800' style={{ width: 38 }}>CCY</T>
+        <T s={10} c={C.mut} w='800' style={{ flex: 1, textAlign: 'center' }}>NET EXPOSURE BAR (SHORT ◀ | ▶ LONG)</T>
+        <T s={10} c={C.mut} w='800' style={{ width: 38, textAlign: 'right' }}>NET</T>
+        <T s={10} c={C.mut} w='800' style={{ width: 50, textAlign: 'right' }}>LOTS</T>
+        <T s={10} c={C.mut} w='800' style={{ width: 54, textAlign: 'right' }}>RISK %</T>
+        <T s={10} c={C.mut} w='800' style={{ width: 42, textAlign: 'right' }}>SHR</T>
+      </Row>
+
+      {analysis.rows.map(r => {
+        const wPct = Math.min(100, (Math.abs(r.netRiskPct) / analysis.maxAbsRisk) * 100);
+        const overLimit = analysis.parsed.length >= 2 && r.sharePct > 40;
+        const isPos = r.netRiskPct > 0;
+        const isNeg = r.netRiskPct < 0;
+        return (
+          <Row
+            key={r.cur}
+            style={{
+              paddingVertical: 5,
+              borderBottomWidth: 1,
+              borderBottomColor: 'rgba(30,42,82,0.5)',
+              backgroundColor: overLimit ? 'rgba(245,158,11,0.08)' : 'transparent'
+            }}
+          >
+            <T s={12} w='800' c={overLimit ? C.warn : r.netRiskPct !== 0 ? C.tx : C.mut} style={{ width: 38 }}>{r.cur}</T>
+            <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', height: 12, marginHorizontal: 6 }}>
+              <View style={{ flex: 1, alignItems: 'flex-end', backgroundColor: C.bg, height: 10, borderTopLeftRadius: 3, borderBottomLeftRadius: 3, overflow: 'hidden' }}>
+                {isNeg && <View style={{ width: `${wPct}%`, height: 10, backgroundColor: overLimit ? C.warn : C.dn }} />}
+              </View>
+              <View style={{ width: 1, height: 14, backgroundColor: C.line }} />
+              <View style={{ flex: 1, alignItems: 'flex-start', backgroundColor: C.bg, height: 10, borderTopRightRadius: 3, borderBottomRightRadius: 3, overflow: 'hidden' }}>
+                {isPos && <View style={{ width: `${wPct}%`, height: 10, backgroundColor: overLimit ? C.warn : C.up }} />}
+              </View>
+            </View>
+            <T s={11} w='800' c={col(r.netCount)} style={{ width: 38, textAlign: 'right' }}>
+              {r.netCount === 0 ? '0' : `${r.netCount > 0 ? '+' : ''}${r.netCount}x`}
+            </T>
+            <T s={11} c={r.netLots === 0 ? C.mut : C.tx} style={{ width: 50, textAlign: 'right' }}>
+              {r.netLots === 0 ? '—' : signedF2(r.netLots, 2)}
+            </T>
+            <T s={11} w='700' c={col(r.netRiskPct)} style={{ width: 54, textAlign: 'right' }}>
+              {r.netRiskPct === 0 ? '—' : `${signedF2(r.netRiskPct, 1)}%`}
+            </T>
+            <T s={10} w='800' c={overLimit ? C.warn : C.mut} style={{ width: 42, textAlign: 'right' }}>
+              {r.sharePct > 0 ? `${Math.round(r.sharePct)}%` : '—'}
+            </T>
+          </Row>
+        );
+      })}
+
+      {/* Live 30D Pairwise Correlation Cross-Check */}
+      {analysis.pairCorrs.length > 0 && (
+        <View style={{ marginTop: 10, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.line }}>
+          <T s={10} c={C.mut} w='800' style={{ marginBottom: 4 }}>OPEN PAIR 30D CORRELATION CROSS-CHECK</T>
+          {analysis.pairCorrs.map((pc, idx) => {
+            const hot = pc.dirCorr > 0.70;
+            return (
+              <Row key={idx} style={{ paddingVertical: 3 }}>
+                <T s={11} c={hot ? C.dnTx : C.tx}>
+                  {pc.a.side} {pc.a.sym} vs {pc.b.side} {pc.b.sym}
+                </T>
+                <T s={11} w='800' c={hot ? C.dn : Math.abs(pc.rawCorr) > 0.70 ? C.warn : C.up}>
+                  {signedF2(pc.dirCorr)} eff ({signedF2(pc.rawCorr)} raw)
+                </T>
+              </Row>
+            );
+          })}
+        </View>
+      )}
+      {!A?.correlations?.['30D'] && (
+        <T s={10} c={C.warn} style={{ marginTop: 6 }}>Live 30D currency correlation matrix is loading — pull to refresh to run pairwise checks.</T>
+      )}
+    </Card>
+  );
+}
+// == END INSERT: FEATURE E ==
+// == START REPLACE: Journal COMPONENT (adds OPEN/CLOSED status, Lots, Risk % & Feature E Guardrail) ==
+function Journal({ trades, setTrades, A, assets }) {
+  const [p, setP] = useState({ pair: '', side: 'LONG', status: 'OPEN', lots: '1.0', riskPct: '1.0', r: '', thesis: '' });
   const [bk, setBk] = useState('');
   const [msg, setMsg] = useState(null);
-  const S = journalStats(trades);
+  const closedTrades = useMemo(() => trades.filter(t => t.status !== 'OPEN' && okN(t.r)), [trades]);
+  const S = journalStats(closedTrades);
 
   const save = t => { setTrades(t); store.set('trades', t); };
   const add = () => {
-    const r = parseFloat(p.r);
-    if (!p.pair.trim() || isNaN(r)) {
-      setMsg({ c: C.dn, t: 'Please enter both a pair symbol and a numeric R result.' });
+    const isOpen = p.status === 'OPEN';
+    const r = isOpen ? null : parseFloat(p.r);
+    if (!p.pair.trim() || (!isOpen && isNaN(r))) {
+      setMsg({ c: C.dn, t: isOpen ? 'Please enter a pair symbol.' : 'Please enter both a pair symbol and a numeric R result.' });
       return;
     }
-    save([...trades, { id: Date.now(), date: new Date().toISOString().slice(0, 10), ...p, pair: p.pair.trim().toUpperCase(), r }]);
+    save([
+      ...trades,
+      {
+        id: Date.now(),
+        date: new Date().toISOString().slice(0, 10),
+        pair: p.pair.trim().toUpperCase(),
+        side: p.side,
+        status: p.status,
+        lots: Math.max(0.01, parseFloat(p.lots) || 1.0),
+        riskPct: Math.max(0.1, parseFloat(p.riskPct) || 1.0),
+        r,
+        thesis: p.thesis
+      }
+    ]);
     setP({ ...p, pair: '', r: '', thesis: '' });
-    setMsg({ c: C.up, t: 'Trade logged to journal.' });
+    setMsg({ c: C.up, t: isOpen ? 'Open trade added to active exposure guardrail.' : 'Closed trade logged to journal.' });
+  };
+  const toggleStatus = id => {
+    save(trades.map(t => (t.id === id ? { ...t, status: t.status === 'OPEN' ? 'CLOSED' : 'OPEN' } : t)));
   };
   const restore = () => {
     try {
@@ -2792,12 +3199,14 @@ function Journal({ trades, setTrades }) {
       setMsg({ c: C.dn, t: 'Invalid backup JSON format.' });
     }
   };
-  const csv = () => Share.share({ message: 'date,pair,side,r,thesis\n' + trades.map(t => [t.date, t.pair, t.side, t.r, '"' + (t.thesis || '').replace(/"/g, '""') + '"'].join(',')).join('\n') }).catch(() => {});
+  const csv = () => Share.share({ message: 'date,pair,side,status,lots,riskPct,r,thesis\n' + trades.map(t => [t.date, t.pair, t.side, t.status || 'CLOSED', t.lots || 1, t.riskPct || 1, t.r ?? '', '"' + (t.thesis || '').replace(/"/g, '""') + '"'].join(',')).join('\n') }).catch(() => {});
 
   return (
     <>
-      <Card title='Journal Performance'>
-        <Row><T c={C.mut}>Trades</T><T>{S.n}</T></Row>
+      <PortfolioExposureGuardrail trades={trades} A={A} assets={assets} />
+
+      <Card title='Journal Performance (Closed Trades)'>
+        <Row><T c={C.mut}>Closed Trades</T><T>{S.n}</T></Row>
         <Row><T c={C.mut}>Win Rate</T><T>{f2(S.wr, 1)}%</T></Row>
         <Row><T c={C.mut}>Total R</T><T c={col(S.tot)} w='700'>{signedF2(S.tot)}R</T></Row>
         <Row><T c={C.mut}>Profit Factor</T><T>{S.pf === Infinity ? '∞' : f2(S.pf)}</T></Row>
@@ -2807,12 +3216,17 @@ function Journal({ trades, setTrades }) {
       <Card title='Log Trade'>
         {!!msg && <T s={12} w='700' c={msg.c} style={{ marginBottom: 8 }}>{msg.t}</T>}
         <Row style={{ marginBottom: 8 }}>
-          <Inp label='Pair' v={p.pair} set={x => setP({ ...p, pair: x })} kb='default' ph='EURUSD' />
-          <Inp label='R Result' v={p.r} set={x => setP({ ...p, r: x })} ph='1.5' />
-          <Btn t={p.side} on={() => setP({ ...p, side: p.side === 'LONG' ? 'SHORT' : 'LONG' })} style={{ alignSelf: 'flex-end' }} />
+          <Inp label='Pair / XAU' v={p.pair} set={x => setP({ ...p, pair: x })} kb='default' ph='EUR/USD' flex={1.3} />
+          <Inp label='Lots' v={p.lots} set={x => setP({ ...p, lots: x })} ph='1.0' flex={0.7} />
+          <Inp label='Risk %' v={p.riskPct} set={x => setP({ ...p, riskPct: x })} ph='1.0' flex={0.7} />
+          {p.status === 'CLOSED' && <Inp label='R Result' v={p.r} set={x => setP({ ...p, r: x })} ph='1.5' flex={0.8} />}
+        </Row>
+        <Row style={{ marginBottom: 8, justifyContent: 'flex-start' }}>
+          <Btn small t={p.side} on={() => setP({ ...p, side: p.side === 'LONG' ? 'SHORT' : 'LONG' })} style={{ marginRight: 8, backgroundColor: p.side === 'LONG' ? C.upBg : C.dnBg }} />
+          <Btn small t={`Status: ${p.status}`} on={() => setP({ ...p, status: p.status === 'OPEN' ? 'CLOSED' : 'OPEN' })} style={{ backgroundColor: p.status === 'OPEN' ? C.acBg : C.line }} />
         </Row>
         <Inp label='Macro Thesis' v={p.thesis} set={x => setP({ ...p, thesis: x })} kb='default' ph='Real yield spread + clean COT' />
-        <Btn primary t='Add Trade' on={add} style={{ marginTop: 10, alignSelf: 'flex-start' }} />
+        <Btn primary t={p.status === 'OPEN' ? 'Add Open Position' : 'Log Closed Trade'} on={add} style={{ marginTop: 10, alignSelf: 'flex-start' }} />
       </Card>
       <Card title='Export / Restore Backup'>
         <Row style={{ justifyContent: 'flex-start' }}>
@@ -2823,18 +3237,32 @@ function Journal({ trades, setTrades }) {
         <Btn t='Restore JSON' on={restore} style={{ marginTop: 8, alignSelf: 'flex-start' }} />
       </Card>
       {trades.slice().reverse().map(t => (
-        <Card key={t.id} style={{ padding: 10, marginBottom: 6 }}>
+        <Card key={t.id} style={{ padding: 10, marginBottom: 6, borderColor: t.status === 'OPEN' ? C.ac : C.line }}>
           <Row>
-            <T w='700'>{t.pair} <T c={C.mut} s={11}>{t.side} · {t.date}</T></T>
-            <T c={col(t.r)} w='700'>{t.r > 0 ? '+' : ''}{t.r}R</T>
+            <Row style={{ justifyContent: 'flex-start' }}>
+              <T w='700'>{t.pair} <T c={C.mut} s={11}>{t.side} · {t.lots || 1}L · {t.riskPct || 1}% · {t.date}</T></T>
+            </Row>
+            {t.status === 'OPEN' ? (
+              <Tag text='OPEN' bg={C.acBg} fg='#fff' style={{ marginRight: 0, marginBottom: 0 }} />
+            ) : (
+              <T c={col(t.r)} w='700'>{t.r > 0 ? '+' : ''}{t.r}R</T>
+            )}
           </Row>
           {!!t.thesis && <T c={C.mut} s={12} style={{ marginTop: 3 }}>{t.thesis}</T>}
-          <TouchableOpacity onPress={() => save(trades.filter(x => x.id !== t.id))} style={{ marginTop: 4 }}><T c={C.dn} s={11}>Delete</T></TouchableOpacity>
+          <Row style={{ marginTop: 6, justifyContent: 'flex-start' }}>
+            <TouchableOpacity onPress={() => toggleStatus(t.id)} style={{ marginRight: 14 }}>
+              <T c={C.ac} s={11} w='700'>{t.status === 'OPEN' ? 'Mark Closed' : 'Re-open Position'}</T>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => save(trades.filter(x => x.id !== t.id))}>
+              <T c={C.dn} s={11}>Delete</T>
+            </TouchableOpacity>
+          </Row>
         </Card>
       ))}
     </>
   );
 }
+// == END REPLACE: Journal COMPONENT ==
 
 // ============================================================================
 // 16. ROOT APP SHELL
@@ -2967,7 +3395,7 @@ export default function App() {
       {tab === 3 && <Macro d={dash} assets={assets} intel={intel} gold={gold} />}
       {tab === 4 && <News news={news} trades={trades} nf={nf} setNf={setNf} />}
       {tab === 5 && <Risk pre={pre} />}
-      {tab === 6 && <Journal trades={trades} setTrades={setTrades} />}
+      {tab === 6 && <Journal trades={trades} setTrades={setTrades} A={A} assets={assets} />}
       {tab === 7 && <EconCalendar cal={cal} refreshTick={refreshTick} />}
       {tab === 8 && <Picks A={A} fx={fx} cal={cal} news={news} dash={dash} assets={assets} intel={intel} gold={gold} scrollRef={scrollRef} />}
     </ScrollView>
