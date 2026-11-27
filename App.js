@@ -817,8 +817,9 @@ function NextHigh({ cal }) {
 // 7. OVERVIEW & CONSOLIDATED MACRO EXECUTIVE DASHBOARD (PRIORITY 1, 3, 5)
 // ============================================================================
 
-function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, cal, dash }) { 
+function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, cal, dash, assets }) { 
   const surprises = useMemo(() => computeEconomicSurprises(cal), [cal]);
+  const transition = useMemo(() => computeRegimeTransition(A, fx, intel, gold, dash, assets), [A, fx, intel, gold, dash, assets]);
   const cbExp = useMemo(() => computeCentralBankExpectations(A, fx, dash), [A, fx, dash]);
   const [strTf, setStrTf] = useState(21);
   const [corrWin, setCorrWin] = useState('60D');
@@ -963,6 +964,36 @@ function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, ca
           </View>
           <TouchableOpacity onPress={() => onNavigate(1)}>
             <T s={10} c={C.ac} w='700'>Rate Path Engine →</T>
+          </TouchableOpacity>
+        </View>
+<View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.line, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
+            <T s={10} c={C.mut} w='800' style={{ marginRight: 8 }}>REGIME VELOCITY (14D):</T>
+            <TouchableOpacity onPress={() => onNavigate(3)}>
+              <Tag
+                text={
+                  transition.available
+                    ? `${transition.currentRegime} · Vel ${transition.velocity > 0 ? '+' : ''}${transition.velocity}`
+                    : 'Regime Velocity: Loading…'
+                }
+                bg={transition.velocity >= 20 ? C.upBg : transition.velocity <= -20 ? C.dnBg : C.line}
+                fg={transition.velocity >= 20 ? C.upTx : transition.velocity <= -20 ? C.dnTx : C.tx}
+                border={transition.velocity >= 20 ? C.up : transition.velocity <= -20 ? C.dn : C.line}
+              />
+            </TouchableOpacity>
+            {transition.earlyShift && (
+              <TouchableOpacity onPress={() => onNavigate(3)}>
+                <Tag
+                  text={`⚡ ${transition.targetRegime}`}
+                  bg={transition.severity === 'RED' ? C.dnBg : C.warnBg}
+                  fg={transition.severity === 'RED' ? C.dnTx : C.warnTx}
+                  border={transition.severity === 'RED' ? C.dn : C.warn}
+                />
+              </TouchableOpacity>
+            )}
+          </View>
+          <TouchableOpacity onPress={() => onNavigate(3)}>
+            <T s={10} c={C.ac} w='700'>Transition Radar →</T>
           </TouchableOpacity>
         </View>
         {!!exec?.upcomingHighImpact?.length && (
@@ -1952,8 +1983,307 @@ function PairModal({ p, A, fx, cot, send, onClose, onOpenScore }) {
 // ============================================================================
 // 11. MACRO & CROSS-ASSET DRIVERS SCREEN (PRIORITY 1.2, 2.14 & PRIORITY 3.2)
 // ============================================================================
+// == START INSERT: FEATURE D (MACRO REGIME TRANSITION DETECTOR) ==
+const HIGH_BETA_CUR = ['AUD', 'NZD', 'CAD'];
+const SAFE_HAVEN_CUR = ['JPY', 'CHF', 'USD'];
 
-function Macro({ d, assets, intel, gold }) {
+function regimeBadgeStyle(regime) {
+  if (regime === 'RISK-ON EXPANSION') return { bg: C.upBg, fg: C.upTx, border: C.up };
+  if (regime === 'RISK-OFF DEFENSIVE') return { bg: C.dnBg, fg: C.dnTx, border: C.dn };
+  if (regime === 'STAGFLATION / GOLD HEDGE') return { bg: C.warnBg, fg: C.warnTx, border: C.warn };
+  return { bg: C.line, fg: C.tx, border: '#64748b' };
+}
+
+function computeRegimeTransition(A, fx, intel, gold, dash, assets) {
+  if (!A?.str?.[5] || !A?.str?.[21]) {
+    return {
+      available: false,
+      currentRegime: 'TRANSITIONAL / CHOP',
+      velocity: 0,
+      earlyShift: false,
+      severity: null,
+      targetRegime: null,
+      driverSummary: 'Waiting for 5D/21D/60D FX strength and cross-asset feeds…',
+      favored: [],
+      vulnerable: []
+    };
+  }
+
+  const s5 = A.str[5], s21 = A.str[21], s63 = A.str[63] || s21;
+  const avgBasket = (map, list) => mean(list.map(c => map[c] ?? 0));
+
+  // 1. High-Beta (AUD+NZD+CAD) vs. Safe-Haven (JPY+CHF+USD) rotation
+  const hb5 = avgBasket(s5, HIGH_BETA_CUR);
+  const sh5 = avgBasket(s5, SAFE_HAVEN_CUR);
+  const hb21 = avgBasket(s21, HIGH_BETA_CUR);
+  const sh21 = avgBasket(s21, SAFE_HAVEN_CUR);
+  const hb60 = avgBasket(s63, HIGH_BETA_CUR);
+  const sh60 = avgBasket(s63, SAFE_HAVEN_CUR);
+
+  const spread5d = Number((hb5 - sh5).toFixed(2));
+  const spread21d = Number((hb21 - sh21).toFixed(2));
+  const spread60d = Number((hb60 - sh60).toFixed(2));
+  // Normalize 21D & 60D spreads to a 5-trading-day pace for apples-to-apples velocity comparison
+  const baseline5dPace = (spread21d / 4.2 + spread60d / 12.6) / 2;
+  const fxRotationAccel = spread5d - baseline5dPace;
+
+  // 2. Cross-Asset Signals (VIX, DXY, US 2s10s, Gold, Oil)
+  const drv = assets?.crossAssetDrivers || intel?.crossAssetDrivers || {};
+  const fred = dash?.fred || {};
+  const vixObj = drv.riskSentiment?.vix;
+  const vixVal = vixObj?.value ?? vixObj?.price ?? null;
+  const vixD1Pct = okN(vixObj?.d1) ? vixObj.d1 * 100 : null;
+  const vixM1Pct = okN(vixObj?.m1) ? vixObj.m1 * 100 : null;
+
+  const dxyObj = drv.usd?.dxy;
+  const dxyM1Pct = okN(dxyObj?.m1) ? dxyObj.m1 * 100 : null;
+  const dxyD1Pct = okN(dxyObj?.d1) ? dxyObj.d1 * 100 : null;
+
+  const slope2s10s =
+    dash?.derived?.spread2s10s?.value ??
+    (okN(fred.us10y?.value) && okN(fred.us2y?.value)
+      ? Number((fred.us10y.value - fred.us2y.value).toFixed(2))
+      : null);
+
+  const goldM1Pct = okN(gold?.m1) ? gold.m1 * 100 : null;
+  const goldD1Pct = okN(gold?.d1) ? gold.d1 * 100 : null;
+
+  const oilObj = drv.oil?.wti || assets?.data?.USOIL;
+  const oilM1Pct = okN(oilObj?.m1) ? oilObj.m1 * 100 : null;
+
+  const cpiVals = CUR.map(c => fx?.data?.[c]?.cpi?.value).filter(okN);
+  const gdpVals = CUR.map(c => fx?.data?.[c]?.gdp?.value).filter(okN);
+  const avgCpi = cpiVals.length ? mean(cpiVals) : null;
+  const avgGdp = gdpVals.length ? mean(gdpVals) : null;
+
+  // 3. Classify Current Macro Regime (21D/60D medium-term anchor + cross-asset confirmation)
+  const mediumSpread = spread21d * 0.65 + spread60d * 0.35;
+  const goldHot = okN(goldM1Pct) && goldM1Pct >= 2.5;
+  const oilHot = okN(oilM1Pct) && oilM1Pct >= 3.0;
+  const stagflationMacro =
+    (okN(avgCpi) && avgCpi >= 2.8 && okN(avgGdp) && avgGdp <= 1.8) ||
+    (goldHot && (oilHot || (okN(vixVal) && vixVal >= 19)) && mediumSpread <= 0.35);
+
+  let currentRegime = 'TRANSITIONAL / CHOP';
+  if (stagflationMacro && (goldHot || mediumSpread < 0.2)) {
+    currentRegime = 'STAGFLATION / GOLD HEDGE';
+  } else if (mediumSpread >= 0.45 && (!okN(vixVal) || vixVal < 21)) {
+    currentRegime = 'RISK-ON EXPANSION';
+  } else if (mediumSpread <= -0.45 || (okN(vixVal) && vixVal >= 22 && mediumSpread <= 0.1)) {
+    currentRegime = 'RISK-OFF DEFENSIVE';
+  }
+
+  // 4. 14-Day Transition Velocity Score (-100 to +100)
+  let rawVel = fxRotationAccel * 38 + spread5d * 18;
+  if (okN(vixVal)) rawVel += vixVal >= 22 ? -18 : vixVal <= 15 ? 12 : (18 - vixVal) * 2.2;
+  if (okN(vixD1Pct)) rawVel -= Math.max(-15, Math.min(15, vixD1Pct * 1.4));
+  if (okN(dxyM1Pct)) rawVel -= Math.max(-14, Math.min(14, dxyM1Pct * 3.5));
+  if (okN(slope2s10s)) rawVel += slope2s10s < 0 ? -8 : Math.min(10, slope2s10s * 8);
+  if (okN(oilM1Pct) && okN(goldM1Pct)) {
+    // Oil outperforming Gold favors cyclical Risk-On; Gold surging over Oil favors defensive/hedge
+    rawVel += Math.max(-12, Math.min(12, (oilM1Pct - goldM1Pct) * 1.2));
+  }
+  const velocity = Math.max(-100, Math.min(100, Math.round(rawVel)));
+
+  // 5. Early Shift Detection (5D rotation sharply diverging from 21D/60D prevailing regime)
+  let earlyShift = false;
+  let severity = null;
+  let targetRegime = null;
+  const drivers = [];
+
+  const sharpRiskOffShift =
+    (currentRegime === 'RISK-ON EXPANSION' && (spread5d <= -0.35 || velocity <= -28)) ||
+    (currentRegime === 'TRANSITIONAL / CHOP' && velocity <= -35 && spread5d <= -0.45);
+  const sharpRiskOnShift =
+    (currentRegime === 'RISK-OFF DEFENSIVE' && (spread5d >= 0.35 || velocity >= 28)) ||
+    (currentRegime === 'TRANSITIONAL / CHOP' && velocity >= 35 && spread5d >= 0.45);
+  const sharpStagflationShift =
+    currentRegime !== 'STAGFLATION / GOLD HEDGE' &&
+    goldHot &&
+    oilHot &&
+    spread5d < 0 &&
+    velocity <= -18;
+
+  if (sharpStagflationShift) {
+    earlyShift = true;
+    severity = velocity <= -40 ? 'RED' : 'AMBER';
+    targetRegime = 'Early Rotation → Stagflation / Gold Hedge';
+  } else if (sharpRiskOffShift) {
+    earlyShift = true;
+    severity = velocity <= -50 || spread5d <= -0.85 ? 'RED' : 'AMBER';
+    targetRegime = 'Early Rotation → Risk-Off';
+  } else if (sharpRiskOnShift) {
+    earlyShift = true;
+    severity = velocity >= 50 || spread5d >= 0.85 ? 'RED' : 'AMBER';
+    targetRegime = 'Early Rotation → Risk-On';
+  }
+
+  // Build concise 1-line driver summary
+  drivers.push(`5D High-Beta vs Haven ${signedF2(spread5d)}% (vs 21D ${signedF2(spread21d)}%)`);
+  if (okN(vixVal)) drivers.push(`VIX ${f2(vixVal, 1)}${okN(vixD1Pct) ? ` (${pctRaw(vixD1Pct)} 1D)` : ''}`);
+  if (okN(dxyM1Pct)) drivers.push(`DXY 1M ${pctRaw(dxyM1Pct)}`);
+  if (okN(slope2s10s)) drivers.push(`2s10s ${signedF2(slope2s10s)}pp`);
+  if (okN(goldM1Pct)) drivers.push(`Gold 1M ${pctRaw(goldM1Pct)}`);
+  if (okN(oilM1Pct)) drivers.push(`WTI 1M ${pctRaw(oilM1Pct)}`);
+
+  // Determine favored vs. vulnerable currency baskets based on active shift or current regime
+  const biasMode = earlyShift
+    ? targetRegime.includes('Risk-Off')
+      ? 'RISK_OFF'
+      : targetRegime.includes('Risk-On')
+      ? 'RISK_ON'
+      : 'STAG'
+    : currentRegime === 'RISK-ON EXPANSION'
+    ? 'RISK_ON'
+    : currentRegime === 'RISK-OFF DEFENSIVE'
+    ? 'RISK_OFF'
+    : currentRegime === 'STAGFLATION / GOLD HEDGE'
+    ? 'STAG'
+    : velocity >= 15
+    ? 'RISK_ON'
+    : velocity <= -15
+    ? 'RISK_OFF'
+    : 'NEUTRAL';
+
+  const basketMap = {
+    RISK_ON: { favored: ['AUD', 'NZD', 'CAD', 'GBP'], vulnerable: ['JPY', 'CHF', 'USD'] },
+    RISK_OFF: { favored: ['JPY', 'CHF', 'USD', 'XAU'], vulnerable: ['AUD', 'NZD', 'CAD', 'EUR'] },
+    STAG: { favored: ['XAU', 'CHF', 'CAD', 'USD'], vulnerable: ['EUR', 'GBP', 'JPY'] },
+    NEUTRAL: { favored: ['Selective Spreads Only'], vulnerable: ['Breakout Chasing'] }
+  }[biasMode];
+
+  return {
+    available: true,
+    currentRegime,
+    velocity,
+    earlyShift,
+    severity,
+    targetRegime,
+    driverSummary: drivers.slice(0, 4).join(' · '),
+    favored: basketMap.favored,
+    vulnerable: basketMap.vulnerable,
+    baskets: {
+      hb5: Number(hb5.toFixed(2)),
+      sh5: Number(sh5.toFixed(2)),
+      hb21: Number(hb21.toFixed(2)),
+      sh21: Number(sh21.toFixed(2)),
+      hb60: Number(hb60.toFixed(2)),
+      sh60: Number(sh60.toFixed(2)),
+      spread5d,
+      spread21d,
+      spread60d
+    },
+    signals: { vixVal, vixD1Pct, vixM1Pct, dxyM1Pct, dxyD1Pct, slope2s10s, goldM1Pct, goldD1Pct, oilM1Pct }
+  };
+}
+
+function RegimeTransitionCard({ data }) {
+  if (!data?.available) return null;
+  const st = regimeBadgeStyle(data.currentRegime);
+  const velBarW = Math.min(100, Math.abs(data.velocity));
+  const isVelPos = data.velocity > 0;
+  const isVelNeg = data.velocity < 0;
+  const velColor = data.velocity >= 20 ? C.up : data.velocity <= -20 ? C.dn : C.warn;
+  const isRed = data.severity === 'RED';
+
+  return (
+    <Card
+      title='Macro Regime Transition Detector (14D Velocity & Early Shift Radar)'
+      style={{ borderColor: data.earlyShift ? (isRed ? C.dn : C.warn) : st.border }}
+      right={<Tag text={data.currentRegime} bg={st.bg} fg={st.fg} border={st.border} style={{ marginRight: 0, marginBottom: 0 }} />}
+    >
+      {/* Early Regime Shift Alert Banner */}
+      {data.earlyShift ? (
+        <View
+          style={{
+            backgroundColor: isRed ? '#2a0d14' : '#2c1a06',
+            borderWidth: 1,
+            borderColor: isRed ? C.dn : C.warn,
+            borderRadius: 8,
+            padding: 9,
+            marginBottom: 10
+          }}
+        >
+          <Row>
+            <T s={11} w='800' c={isRed ? C.dnTx : C.warnTx}>
+              {isRed ? '🚨 EARLY REGIME SHIFT ALERT' : '⚡ EARLY REGIME SHIFT WATCH'}
+            </T>
+            <Tag text={data.targetRegime} bg={isRed ? C.dnBg : C.warnBg} fg={isRed ? C.dnTx : C.warnTx} style={{ marginRight: 0, marginBottom: 0 }} />
+          </Row>
+          <T s={11} c={isRed ? C.dnTx : C.warnTx} style={{ marginTop: 4 }}>{data.driverSummary}</T>
+        </View>
+      ) : (
+        <View style={{ backgroundColor: C.bg, borderWidth: 1, borderColor: C.line, borderRadius: 8, padding: 8, marginBottom: 10 }}>
+          <T s={11} c={C.mut}>
+            <T s={11} w='700' c={C.tx}>Regime Aligned: </T>{data.driverSummary}
+          </T>
+        </View>
+      )}
+
+      {/* 14-Day Transition Velocity Meter (-100 to +100) */}
+      <Row style={{ marginBottom: 4 }}>
+        <T s={10} c={C.mut} w='800'>14-DAY TRANSITION VELOCITY (-100 RISK-OFF ◀ | ▶ +100 RISK-ON)</T>
+        <T s={13} w='800' c={velColor}>{data.velocity > 0 ? `+${data.velocity}` : data.velocity}</T>
+      </Row>
+      <View style={{ flexDirection: 'row', alignItems: 'center', height: 14, marginBottom: 10 }}>
+        <View style={{ flex: 1, alignItems: 'flex-end', backgroundColor: C.bg, height: 12, borderTopLeftRadius: 4, borderBottomLeftRadius: 4, overflow: 'hidden', borderWidth: 1, borderColor: C.line }}>
+          {isVelNeg && <View style={{ width: `${velBarW}%`, height: '100%', backgroundColor: C.dn }} />}
+        </View>
+        <View style={{ width: 2, height: 16, backgroundColor: C.tx }} />
+        <View style={{ flex: 1, alignItems: 'flex-start', backgroundColor: C.bg, height: 12, borderTopRightRadius: 4, borderBottomRightRadius: 4, overflow: 'hidden', borderWidth: 1, borderColor: C.line }}>
+          {isVelPos && <View style={{ width: `${velBarW}%`, height: '100%', backgroundColor: C.up }} />}
+        </View>
+      </View>
+
+      {/* High-Beta vs. Safe-Haven Rotation Breakdown (5D vs 21D vs 60D) */}
+      <View style={{ backgroundColor: C.bg, borderRadius: 8, padding: 9, borderWidth: 1, borderColor: C.line, marginBottom: 10 }}>
+        <Row style={{ paddingBottom: 4, borderBottomWidth: 1, borderBottomColor: C.line }}>
+          <T s={10} c={C.mut} w='800' style={{ flex: 1.5 }}>BASKET ROTATION</T>
+          <T s={10} c={C.mut} w='800' style={{ flex: 1, textAlign: 'right' }}>5D (ST)</T>
+          <T s={10} c={C.mut} w='800' style={{ flex: 1, textAlign: 'right' }}>21D (MT)</T>
+          <T s={10} c={C.mut} w='800' style={{ flex: 1, textAlign: 'right' }}>60D (BASE)</T>
+        </Row>
+        <Row style={{ paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: 'rgba(30,42,82,0.5)' }}>
+          <T s={11} w='700' style={{ flex: 1.5 }}>High-Beta (AUD/NZD/CAD)</T>
+          <T s={11} w='700' c={col(data.baskets.hb5)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.hb5)}</T>
+          <T s={11} c={col(data.baskets.hb21)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.hb21)}</T>
+          <T s={11} c={col(data.baskets.hb60)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.hb60)}</T>
+        </Row>
+        <Row style={{ paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: 'rgba(30,42,82,0.5)' }}>
+          <T s={11} w='700' style={{ flex: 1.5 }}>Safe-Haven (JPY/CHF/USD)</T>
+          <T s={11} w='700' c={col(data.baskets.sh5)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.sh5)}</T>
+          <T s={11} c={col(data.baskets.sh21)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.sh21)}</T>
+          <T s={11} c={col(data.baskets.sh60)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.sh60)}</T>
+        </Row>
+        <Row style={{ paddingTop: 5 }}>
+          <T s={11} w='800' c={C.ac} style={{ flex: 1.5 }}>Net Spread (High-Beta − Haven)</T>
+          <T s={12} w='800' c={col(data.baskets.spread5d)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.spread5d)}</T>
+          <T s={11} w='700' c={col(data.baskets.spread21d)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.spread21d)}</T>
+          <T s={11} w='700' c={col(data.baskets.spread60d)} style={{ flex: 1, textAlign: 'right' }}>{pctRaw(data.baskets.spread60d)}</T>
+        </Row>
+      </View>
+
+      {/* Favored vs. Vulnerable G8 Baskets */}
+      <Row style={{ alignItems: 'flex-start', gap: 8 }}>
+        <View style={{ flex: 1, backgroundColor: '#0d2b1d', borderWidth: 1, borderColor: '#166534', borderRadius: 8, padding: 8 }}>
+          <T s={10} w='800' c={C.upTx} style={{ marginBottom: 4 }}>▲ FAVORED BASKET</T>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+            {data.favored.map(c => <Tag key={c} text={c} bg={C.upBg} fg={C.upTx} border={C.up} />)}
+          </View>
+        </View>
+        <View style={{ flex: 1, backgroundColor: '#2a0d14', borderWidth: 1, borderColor: '#7f1d1d', borderRadius: 8, padding: 8 }}>
+          <T s={10} w='800' c={C.dnTx} style={{ marginBottom: 4 }}>▼ VULNERABLE / AVOID</T>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+            {data.vulnerable.map(c => <Tag key={c} text={c} bg={C.dnBg} fg={C.dnTx} border={C.dn} />)}
+          </View>
+        </View>
+      </Row>
+    </Card>
+  );
+}
+// == END INSERT: FEATURE D ==
+function Macro({ A, fx, d, assets, intel, gold }) {
+  const transition = useMemo(() => computeRegimeTransition(A, fx, intel, gold, d, assets), [A, fx, intel, gold, d, assets]);
   if (!d) return <Wait />;
   const F = d.fred || {};
   const B = d.bls || {};
@@ -1977,7 +2307,7 @@ function Macro({ d, assets, intel, gold }) {
       <Note>
         Unified Gold feed, sovereign real yields, WTI/Brent energy regime, VIX/equities/credit risk sentiment, BTC liquidity correlations, Safe-Haven flows, and FRED/BLS releases with explicit source/date/STALE badges.
       </Note>
-
+<RegimeTransitionCard data={transition} />
       {!!xAlerts.length && (
         <Card title='Cross-Asset Correlation Breakdown Alerts' style={{ borderColor: C.warn }}>
           {xAlerts.map((a, idx) => (
@@ -3918,11 +4248,11 @@ export default function App() {
       refreshControl={<RefreshControl refreshing={busy} onRefresh={() => refresh(true)} tintColor={C.ac} colors={[C.ac]} />}
     >
       {(tab === 0 || tab === 4) && <NextHigh cal={cal} />}
-      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} dash={dash} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
+      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} dash={dash} assets={assets} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
       {tab === 9 && <SwingIntel intel={intel} onOpenScore={setScoreModalCur} />}
       {tab === 1 && <Fundamentals A={A} fx={fx} cot={cot} onOpenScore={setScoreModalCur} />}
       {tab === 2 && <Scanner A={A} fx={fx} cot={cot} intel={intel} gold={gold} send={sendToRisk} onOpenScore={setScoreModalCur} />}
-      {tab === 3 && <Macro d={dash} assets={assets} intel={intel} gold={gold} />}
+      {tab === 3 && <Macro A={A} fx={fx} d={dash} assets={assets} intel={intel} gold={gold} />}
       {tab === 4 && <News news={news} trades={trades} nf={nf} setNf={setNf} />}
       {tab === 5 && <Risk pre={pre} />}
       {tab === 6 && <Journal trades={trades} setTrades={setTrades} A={A} assets={assets} />}
