@@ -6,7 +6,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 const cache={};
 async function getText(url,opt={},tries=4){let e;for(let i=0;i<tries;i++){try{const r=await fetch(url,{...opt,headers:{'User-Agent':'FXFundamentalsPro/1.0',...(opt.headers||{})},signal:AbortSignal.timeout(15000)});if(!r.ok)throw new Error('HTTP '+r.status);return await r.text()}catch(x){e=x;await sleep(500*2**i)}}throw e}
 const flight={};
-async function cached(key,ttl,fn,force){const c=cache[key];if(c&&Date.now()-c.t<(force?Math.min(ttl,6e4):ttl))return{...c.v,stale:false,fetchedAt:c.t};try{const v=await(flight[key]??=fn().finally(()=>{delete flight[key]}));cache[key]={t:Date.now(),v};return{...v,stale:false,fetchedAt:cache[key].t}}catch(e){if(c)return{...c.v,stale:true,fetchedAt:c.t,error:e.message};throw e}}
+async function cached(key,ttl,fn,force){const c=cache[key];if(c&&Date.now()-c.t<(force?2000:ttl))return{...c.v,stale:false,fetchedAt:c.t};try{const v=await(flight[key]??=fn().finally(()=>{delete flight[key]}));cache[key]={t:Date.now(),v};return{...v,stale:false,fetchedAt:cache[key].t}}catch(e){if(c)return{...c.v,stale:true,fetchedAt:c.t,error:e.message};throw e}}
 
 // ---- ECB history (daily reference rates; units of currency per 1 EUR)
 async function ecb(){
@@ -311,17 +311,331 @@ async function fundamentals(){
 setTimeout(()=>cached('f',18e5,fundamentals).catch(()=>{}),4000);
 setInterval(()=>cached('f',0,fundamentals,true).catch(()=>{}),18e5);
 
-// ---- Economic calendar (Forex Factory public feed via faireconomy.media) + CFTC COT
-const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json'],CAL_NEXT=['https://nfs.faireconomy.media/ff_calendar_nextweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_nextweek.json'],MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
+// ---- Economic calendar (v11: Forex Factory schedule + live actuals merged from TradingView / FXStreet / TradingEconomics)
+const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json'];
+const CAL_NEXT=['https://nfs.faireconomy.media/ff_calendar_nextweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_nextweek.json'];
+const MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
+const TV_CUR={US:'USD',EU:'EUR',DE:'EUR',FR:'EUR',IT:'EUR',ES:'EUR',GB:'GBP',JP:'JPY',CH:'CHF',CA:'CAD',AU:'AUD',NZ:'NZD'};
+const TE_CUR={'united states':'USD','euro area':'EUR','germany':'EUR','france':'EUR','italy':'EUR','spain':'EUR','united kingdom':'GBP','japan':'JPY','switzerland':'CHF','canada':'CAD','australia':'AUD','new zealand':'NZD'};
+
 async function firstJson(urls){let e;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2))}catch(x){e=x}}throw e}
+
+function fmtCalVal(v,unit,scale){
+  if(v==null||v==='')return null;
+  if(typeof v==='string'){
+    const s=v.trim();
+    if(!s)return null;
+    if(/[%KMBT]$/i.test(s)||/[^\d.\-+eE]/.test(s))return s;
+  }
+  const n=Number(v);
+  if(isNaN(n))return String(v).trim()||null;
+  const sc=String(scale||'').trim().toUpperCase();
+  const sfx=sc==='K'||sc==='THOUSANDS'?'K':sc==='M'||sc==='MILLIONS'?'M':sc==='B'||sc==='BILLIONS'?'B':sc==='T'||sc==='TRILLIONS'?'T':'';
+  const u=String(unit||'').trim();
+  const uSfx=!sfx&&/^[KMBT]$/i.test(u)?u.toUpperCase():'';
+  const pctSfx=u==='%'?'%':'';
+  const numStr=Number.isInteger(n)?String(n):String(+n.toFixed(2));
+  return`${numStr}${sfx||uSfx}${pctSfx}`;
+}
+
+function alignUnit(val,ref){
+  if(!val)return null;
+  const s=String(val).trim();
+  if(/^[+-]?[\d.]+$/.test(s)&&ref&&String(ref).trim().endsWith('%'))return s+'%';
+  return s;
+}
+
+async function tvCalendar(fromIso,toIso){
+  const u=`https://economic-calendar.tradingview.com/events?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}&countries=US,EU,DE,FR,IT,ES,GB,JP,CH,CA,AU,NZ`;
+  const j=JSON.parse(await getText(u,{headers:{'User-Agent':UA,Origin:'https://www.tradingview.com',Referer:'https://www.tradingview.com/',Accept:'application/json'}},2));
+  const arr=Array.isArray(j?.result)?j.result:Array.isArray(j)?j:[];
+  return arr.map(e=>{
+    const cc=String(e.country||'').toUpperCase();
+    const cur=MAJ.includes(e.currency)?e.currency:TV_CUR[cc];
+    if(!cur||!e.date)return null;
+    const d=new Date(e.date);if(isNaN(d))return null;
+    const imp=e.importance===1?'High':e.importance===0?'Medium':'Low';
+    return{
+      title:String(e.title||e.indicator||'').trim(),
+      currency:cur,
+      geo:cc||null,
+      impact:imp,
+      timestamp:d.toISOString(),
+      actual:fmtCalVal(e.actual,e.unit,e.scale),
+      forecast:fmtCalVal(e.forecast,e.unit,e.scale),
+      previous:fmtCalVal(e.previous,e.unit,e.scale),
+      detail:e.comment?String(e.comment).trim():null,
+      src:'TradingView'
+    };
+  }).filter(Boolean);
+}
+
+async function fxsCalendar(fromIso,toIso){
+  const u=`https://calendar-api.fxstreet.com/en/api/v1/eventDates/${fromIso.slice(0,10)}T00:00:00Z/${toIso.slice(0,10)}T23:59:59Z`;
+  const j=JSON.parse(await getText(u,{headers:{'User-Agent':UA,Origin:'https://www.fxstreet.com',Referer:'https://www.fxstreet.com/',Accept:'application/json'}},2));
+  const arr=Array.isArray(j)?j:Array.isArray(j?.items)?j.items:[];
+  return arr.map(e=>{
+    const cur=String(e.currencyCode||e.currency||'').toUpperCase();
+    if(!MAJ.includes(cur)||!e.dateUtc)return null;
+    const d=new Date(e.dateUtc);if(isNaN(d))return null;
+    const v=String(e.volatility||'').toUpperCase();
+    const imp=v==='HIGH'?'High':v==='MEDIUM'?'Medium':'Low';
+    const pot=String(e.potency||'').toUpperCase();
+    const scale=(pot==='ZERO'||pot==='NONE')?'':pot;
+    return{
+      title:String(e.name||e.title||'').trim(),
+      currency:cur,
+      geo:e.countryCode?String(e.countryCode).toUpperCase():null,
+      impact:imp,
+      timestamp:d.toISOString(),
+      actual:fmtCalVal(e.actual,e.unit,scale),
+      forecast:fmtCalVal(e.consensus??e.forecast,e.unit,scale),
+      previous:fmtCalVal(e.previous,e.unit,scale),
+      detail:e.description?String(e.description).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim():null,
+      src:'FXStreet'
+    };
+  }).filter(Boolean);
+}
+
+async function teCalendar(){
+  const j=JSON.parse(await getText('https://api.tradingeconomics.com/calendar?c=guest:guest&f=json',{headers:{'User-Agent':UA,Accept:'application/json'}},1));
+  if(!Array.isArray(j))return[];
+  return j.map(e=>{
+    const cName=String(e.Country||'').toLowerCase();
+    const cur=MAJ.includes(e.Currency)?e.Currency:TE_CUR[cName];
+    if(!cur||!e.Date)return null;
+    const d=new Date(e.Date+(String(e.Date).endsWith('Z')?'':'Z'));if(isNaN(d))return null;
+    const imp=e.Importance>=3?'High':e.Importance===2?'Medium':'Low';
+    const geo=cName==='germany'?'DE':cName==='france'?'FR':cName==='italy'?'IT':cName==='spain'?'ES':null;
+    return{
+      title:String(e.Event||e.Category||'').trim(),
+      currency:cur,
+      geo,
+      impact:imp,
+      timestamp:d.toISOString(),
+      actual:e.Actual!=null&&String(e.Actual).trim()!==''?String(e.Actual).trim():null,
+      forecast:e.Forecast!=null&&String(e.Forecast).trim()!==''?String(e.Forecast).trim():(e.TEForecast!=null&&String(e.TEForecast).trim()!==''?String(e.TEForecast).trim():null),
+      previous:e.Previous!=null&&String(e.Previous).trim()!==''?String(e.Previous).trim():null,
+      detail:null,
+      src:'TradingEconomics'
+    };
+  }).filter(Boolean);
+}
+
+const CAL_STOP=new Set(['the','of','in','for','and','to','us','u','s','uk','eu','ez','au','nz','jp','ca','ch','australia','australian','united','states','euro','area','eurozone','german','germany','french','france','italian','italy','spanish','spain','british','japan','japanese','swiss','switzerland','canada','canadian','new','zealand','monthly','quarterly','annual','yearly','indicator','index','rate','price','prices','change','growth','figure','data','report','release','preliminary','prelim','advance','flash','final','revised','est','estimate','1st','2nd','3rd','s','a','sa','nsa']);
+
+function sigCal(title,geoHint){
+  const t=String(title||'').toLowerCase();
+  const period=/\bm\/m\b|\bmom\b|month[- ]over[- ]month/i.test(t)?'MOM':/\by\/y\b|\byoy\b|year[- ]over[- ]year/i.test(t)?'YOY':/\bq\/q\b|\bqoq\b|quarter[- ]over[- ]quarter/i.test(t)?'QOQ':null;
+  const geo=/\bgerman(y)?\b/i.test(t)?'DE':/\bfrench|france\b/i.test(t)?'FR':/\bitalian|italy\b/i.test(t)?'IT':/\bspanish|spain\b/i.test(t)?'ES':(geoHint&&['DE','FR','IT','ES'].includes(geoHint)?geoHint:null);
+  const flags={
+    core:/\bcore\b|ex(cluding)?\s+(food|energy|autos?|transport)/i.test(t),
+    trimmed:/\btrimmed\b/i.test(t),
+    median:/\bmedian\b/i.test(t),
+    services:/\bservices\b/i.test(t),
+    mfg:/\bmanufacturing\b/i.test(t),
+    comp:/\bcomposite\b/i.test(t),
+    init:/\binitial\b/i.test(t),
+    cont:/\bcontinuing\b/i.test(t),
+    prices:/\bism\b.*\bprices\b/i.test(t)
+  };
+  let fam=null;
+  if(/\bgdp\b.*(price|deflator)/i.test(t))fam='gdp_price';
+  else if(/\bpce\b/i.test(t))fam='pce';
+  else if(/\bcpi\b|\bhicp\b|consumer price|inflation/i.test(t))fam='cpi';
+  else if(/\bgdp\b|gross domestic/i.test(t))fam='gdp';
+  else if(/\bppi\b|producer price/i.test(t))fam='ppi';
+  else if(/average hourly earnings|wage/i.test(t))fam='wages';
+  else if(/non-?farm|\bnfp\b|payrolls/i.test(t))fam='nfp';
+  else if(/jobless claims|unemployment claims/i.test(t))fam='claims';
+  else if(/unemployment/i.test(t))fam='unemp';
+  else if(/employment change/i.test(t))fam='emp_chg';
+  else if(/retail sales/i.test(t))fam='retail';
+  else if(/personal income/i.test(t))fam='pers_inc';
+  else if(/personal spending|personal consumption/i.test(t))fam='pers_spd';
+  else if(/\bpmi\b|\bism\b|purchasing managers/i.test(t))fam='pmi';
+  else if(/trade balance/i.test(t))fam='trade';
+  else if(/current account/i.test(t))fam='curr_acct';
+  else if(/durable goods/i.test(t))fam='durable';
+  else if(/crude oil inventories/i.test(t))fam='oil_inv';
+  else if(/interest rate|cash rate|bank rate|policy rate|rate decision|federal funds|official cash/i.test(t))fam='rate';
+  else if(/consumer confidence|consumer sentiment|michigan/i.test(t))fam='conf';
+  else if(/\bifo\b/i.test(t))fam='ifo';
+  else if(/\bzew\b/i.test(t))fam='zew';
+  else if(/building permits/i.test(t))fam='permits';
+  else if(/housing starts/i.test(t))fam='hstarts';
+  else if(/existing home sales/i.test(t))fam='ex_homes';
+  else if(/new home sales/i.test(t))fam='new_homes';
+
+  const toks=new Set(
+    t.replace(/\bm\/m\b|\bmom\b|\by\/y\b|\byoy\b|\bq\/q\b|\bqoq\b/g,' ')
+     .replace(/[^a-z0-9]+/g,' ')
+     .trim()
+     .split(/\s+/)
+     .filter(w=>w.length>1&&!CAL_STOP.has(w))
+  );
+  if(fam)toks.add(fam);
+  return{period,geo,flags,fam,toks};
+}
+
+function matchLiveEvent(ev,pool){
+  const ts=new Date(ev.timestamp).getTime(),s1=sigCal(ev.title,null);
+  let best=null,bestScore=0;
+  for(const cand of pool){
+    if(cand.currency!==ev.currency)continue;
+    const dt=Math.abs(new Date(cand.timestamp).getTime()-ts);
+    if(dt>26*36e5)continue;
+    const s2=cand._sig||(cand._sig=sigCal(cand.title,cand.geo));
+
+    // Strict qualifier guards to prevent cross-matching sibling releases
+    if(s1.period&&s2.period&&s1.period!==s2.period)continue;
+    if(s1.geo&&s2.geo&&s1.geo!==s2.geo)continue;
+    if(s1.flags.trimmed!==s2.flags.trimmed)continue;
+    if(s1.flags.median!==s2.flags.median)continue;
+    if(s1.flags.core!==s2.flags.core)continue;
+    if(s1.flags.prices!==s2.flags.prices)continue;
+    if((s1.flags.services&&s2.flags.mfg)||(s1.flags.mfg&&s2.flags.services))continue;
+    if((s1.flags.comp&&(s2.flags.mfg||s2.flags.services))||(s2.flags.comp&&(s1.flags.mfg||s1.flags.services)))continue;
+    if((s1.flags.init&&s2.flags.cont)||(s1.flags.cont&&s2.flags.init))continue;
+
+    let inter=0;
+    s1.toks.forEach(w=>{if(s2.toks.has(w))inter++});
+    const sameFam=s1.fam&&s2.fam&&s1.fam===s2.fam;
+    if(!sameFam&&inter===0)continue;
+    if(s1.fam&&s2.fam&&s1.fam!==s2.fam)continue;
+
+    const union=s1.toks.size+s2.toks.size-inter||1;
+    let score=(inter/union)*5+(sameFam?4:0)+(s1.period&&s1.period===s2.period?2.5:0)+(s1.geo&&s1.geo===s2.geo?1.5:0);
+    if(dt<=9e5)score+=4;
+    else if(dt<=72e5)score+=2;
+    else if(dt<=14*36e5)score+=0.5;
+    if(cand.actual!=null)score+=1.2;
+    if(cand.src==='TradingView')score+=0.3;
+
+    if(score>bestScore){bestScore=score;best=cand}
+  }
+  return bestScore>=5?best:null;
+}
+
 async function calendar(){
-  const[w,n]=await Promise.allSettled([firstJson(CAL_THIS),firstJson(CAL_NEXT)]);
-  if(w.status!=='fulfilled'||!Array.isArray(w.value))throw new Error('Calendar feed unavailable: '+(w.reason?.message||'bad format'));
-  const raw=[...w.value,...(n.status==='fulfilled'&&Array.isArray(n.value)?n.value:[])];
-  const items=raw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>({title:e.title,currency:e.country||e.currency,impact:/^(high|medium|low)$/i.test(e.impact||'')?e.impact[0].toUpperCase()+e.impact.slice(1).toLowerCase():'Low',timestamp:(d=>isNaN(d)?null:d.toISOString())(new Date(e.date)),forecast:e.forecast||null,previous:e.previous||null,actual:e.actual||null}));
+  const now=Date.now();
+  const fromIso=new Date(now-8*864e5).toISOString();
+  const toIso=new Date(now+15*864e5).toISOString();
+
+  const[ffThis,ffNext,tvRes,fxsRes,teRes]=await Promise.allSettled([
+    firstJson(CAL_THIS),
+    firstJson(CAL_NEXT),
+    tvCalendar(fromIso,toIso),
+    fxsCalendar(fromIso,toIso),
+    teCalendar()
+  ]);
+
+  const livePool=[
+    ...(tvRes.status==='fulfilled'?tvRes.value:[]),
+    ...(fxsRes.status==='fulfilled'?fxsRes.value:[]),
+    ...(teRes.status==='fulfilled'?teRes.value:[])
+  ];
+  const liveSources=[
+    tvRes.status==='fulfilled'&&tvRes.value.length?'TradingView':null,
+    fxsRes.status==='fulfilled'&&fxsRes.value.length?'FXStreet':null,
+    teRes.status==='fulfilled'&&teRes.value.length?'TradingEconomics':null
+  ].filter(Boolean);
+
+  const ffRaw=[
+    ...(ffThis.status==='fulfilled'&&Array.isArray(ffThis.value)?ffThis.value:[]),
+    ...(ffNext.status==='fulfilled'&&Array.isArray(ffNext.value)?ffNext.value:[])
+  ];
+
+  let items=[];
+  if(ffRaw.length){
+    items=ffRaw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>{
+      const ts=(d=>isNaN(d)?null:d.toISOString())(new Date(e.date));
+      if(!ts)return null;
+      return{
+        title:e.title,
+        currency:e.country||e.currency,
+        impact:/^(high|medium|low)$/i.test(e.impact||'')?e.impact[0].toUpperCase()+e.impact.slice(1).toLowerCase():'Low',
+        timestamp:ts,
+        forecast:e.forecast||null,
+        previous:e.previous||null,
+        actual:e.actual||null,
+        actualSource:e.actual?'Forex Factory':null,
+        detail:null
+      };
+    }).filter(Boolean);
+
+    // Merge live actuals & indicator descriptions onto every FF row
+    for(const ev of items){
+      const match=matchLiveEvent(ev,livePool);
+      if(!match)continue;
+      const isPast=new Date(ev.timestamp).getTime()<=now+3e5;
+      if(!ev.actual&&match.actual&&isPast){
+        ev.actual=alignUnit(match.actual,ev.forecast||ev.previous);
+        ev.actualSource=match.src;
+      }
+      if(!ev.forecast&&match.forecast)ev.forecast=alignUnit(match.forecast,ev.previous);
+      if(!ev.previous&&match.previous)ev.previous=alignUnit(match.previous,ev.forecast);
+      if(!ev.detail&&match.detail)ev.detail=match.detail;
+    }
+
+    // Backfill prior-week released events before FF's earliest date so Yesterday & Past Releases stay populated
+    const minFF=items.reduce((m,e)=>Math.min(m,new Date(e.timestamp).getTime()),Infinity);
+    const seenPast=new Set();
+    const pastBackfill=livePool.filter(e=>{
+      const t=new Date(e.timestamp).getTime();
+      if(t>=minFF||t>now)return false;
+      const s=sigCal(e.title,e.geo);
+      const k=`${e.currency}_${e.timestamp.slice(0,13)}_${s.fam||e.title.toLowerCase().slice(0,18)}_${s.period||''}_${s.flags.core?'c':''}${s.flags.trimmed?'t':''}`;
+      if(seenPast.has(k))return false;
+      seenPast.add(k);
+      return true;
+    }).map(e=>({
+      title:e.title,
+      currency:e.currency,
+      impact:e.impact,
+      timestamp:e.timestamp,
+      forecast:e.forecast,
+      previous:e.previous,
+      actual:e.actual,
+      actualSource:e.actual?e.src:null,
+      detail:e.detail
+    }));
+    items=[...pastBackfill,...items];
+  } else if(livePool.length){
+    // Standalone fallback if Forex Factory feed is unreachable
+    const seen=new Set();
+    items=livePool.filter(e=>{
+      const k=`${e.currency}_${e.timestamp.slice(0,16)}_${e.title.toLowerCase().slice(0,24)}`;
+      if(seen.has(k))return false;
+      seen.add(k);
+      return true;
+    }).map(e=>({
+      title:e.title,
+      currency:e.currency,
+      impact:e.impact,
+      timestamp:e.timestamp,
+      forecast:e.forecast,
+      previous:e.previous,
+      actual:e.actual,
+      actualSource:e.actual?e.src:null,
+      detail:e.detail
+    }));
+  } else {
+    throw new Error('All economic calendar feeds unavailable');
+  }
+
   const ok=items.filter(e=>e.timestamp).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
   if(!ok.length)throw new Error('Calendar feed returned no events');
-  return{items:ok,source:'Forex Factory public calendar feed (faireconomy.media). Actuals appear only if the feed supplies them.'}}
+  const actualsCount=ok.filter(e=>e.actual!=null&&e.actual!=='').length;
+  return{
+    items:ok,
+    actualsCount,
+    liveSources,
+    updatedAt:now,
+    source:`Forex Factory schedule + live actuals (${liveSources.length?liveSources.join(' / '):'cached'}).`
+  };
+}
+
 const COT_MK={EUR:'099741',GBP:'096742',JPY:'097741',CHF:'092741',CAD:'090741',AUD:'232741',NZD:'112741',USD:'098662'};
 async function cot(){
   const codes=Object.values(COT_MK).map(c=>`'${c}'`).join(','),url=`https://publicreporting.cftc.gov/resource/6dca-aqww.json?$where=${encodeURIComponent(`cftc_contract_market_code in(${codes})`)}&$order=${encodeURIComponent('report_date_as_yyyy_mm_dd DESC')}&$limit=64`;
@@ -353,7 +667,7 @@ http.createServer(async(req,res)=>{
     if(p==='/api/assets')return send(res,200,await cached('assets',18e5,multiAssets,force));
     if(p==='/api/dashboard')return send(res,200,await cached('d',3e5,dashboard));
     if(p==='/api/fundamentals')return send(res,200,await cached('f',18e5,fundamentals,force));
-    if(p==='/api/calendar')return send(res,200,await cached('c',18e5,calendar,force));
+    if(p==='/api/calendar')return send(res,200,await cached('c',12e4,calendar,force));
     if(p==='/api/cot')return send(res,200,await cached('cot',432e5,cot));
     if(p==='/api/news'){if(!news.length)await firstPoll.catch(()=>{});return send(res,200,{items:news.filter(n=>!noise(n.title,n.summary)).map(present),lastPoll,cacheSeconds:900})}
     if(p==='/api/news/status')return send(res,200,{count:news.length,high:news.filter(n=>n.impact==='HIGH').length,lastPoll,clients:clients.size});
