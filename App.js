@@ -21,7 +21,7 @@ function analytics(h){
   if(!h?.dates||h.dates.length<70)return null;const n=h.dates.length,t=n-1,L={};
   CUR.forEach(c=>L[c]=h.rates[c].map(Math.log));
   const d=(c,i,k)=>L[c][i]-L[c][i-k];
-  const S=(c,i,k)=>{let s=0;CUR.forEach(o=>{if(o!==c)s+=d(o,i,k)});return(s/7-d(c,i,k))*100};
+  const S=(c,i,k)=>{let s=0;CUR.forEach(o=>{if(o!==c)s+=d(o,i,k)});return(s/7-d(c,i,k))*100}; // currency vs basket of the other 7
   const str={};[1,5,21,63].forEach(k=>{str[k]={};CUR.forEach(c=>str[k][c]=S(c,t,k))});
   const ser={};CUR.forEach(c=>{ser[c]=[];for(let i=n-60;i<n;i++)ser[c].push(S(c,i,1))});
   const px=(b,q,i)=>h.rates[q][i]/h.rates[b][i];
@@ -74,10 +74,12 @@ function Overview({A,sc,fund}){
 }
 function Fundamentals({fx,sc}){
   if(!fx)return<Wait/>;const D=fx.data||{};
-  const R=(l,o,u='%')=><Row style={{paddingVertical:3}}><T c={C.mut} s={13}>{l}</T><T s={13} w='600'>{o?`${f2(o.value)}${u}`:'n/a'} <T c={C.mut} s={10}>{o?o.date+' · '+(o.src||''):''}</T></T></Row>;
+  const R=(l,o,u='%')=><Row style={{paddingVertical:3,alignItems:'flex-start'}}><T c={C.mut} s={13}>{l}</T><View style={{alignItems:'flex-end',flex:1,paddingLeft:10}}>
+    <T s={13} w='600'>{o?`${f2(o.value)}${u}`:'n/a'}{o?.isNew?<T c={C.up} s={10} w='800'>  NEW</T>:null}</T>
+    {!!o&&<T c={o.stale?'#f59e0b':C.mut} s={10} style={{textAlign:'right'}}>{(o.label||o.date)+' · '+(o.src||'')+(o.stale?' · older than expected':'')}</T>}</View></Row>;
   return<>
     <T s={24} w='800'>Fundamentals</T>
-    <Note>Filled automatically — nothing to type. Sources: {fx.sources}. “n/a” means no recent official figure was found; it is left out of the score (never estimated). Stance is a rule-based proxy from the recent policy-rate change, not a statement by the bank. Research aid, not a trade signal.{fx.stale?' (Showing stale server cache.)':''}</Note>
+    <Note>Filled automatically from the newest official releases — nothing to type. The server re-checks every 30 minutes and the Refresh button forces a re-check; a green NEW tag marks a figure that changed in the last 48 hours, and stance and score recalculate from it. “Older than expected” means no fresher release was found yet. “n/a” is left out of the score, never estimated. Stance is a rule-based proxy from the recent policy-rate change. Research aid, not a trade signal.{fx.updatedAt?` Last checked ${new Date(fx.updatedAt).toLocaleString()}.`:''}{fx.stale?' (Showing stale server cache.)':''}</Note>
     {CUR.map(c=>{const d=D[c]||{};return<Card key={c} title={`${c} · ${BANKS[c][0]}`}>
       {R('Policy rate',d.rate)}{R('CPI y/y',d.cpi)}{R('GDP growth y/y',d.gdp)}{R('Unemployment',d.unemp)}
       <Row style={{paddingVertical:3}}><T c={C.mut} s={13}>Stance (-2..+2)</T><T s={13} w='600'>{d.stance?d.stance.value:'n/a'}</T></Row>{d.stance&&<T c={C.mut} s={10}>{d.stance.basis}</T>}
@@ -150,10 +152,14 @@ function ImpactSummary({asset,news}){
       <Bul><T w='700'>🟠 Medium impact: </T>{md.length?`${fmt(md)} — latest “${cl(md[0][1][0].title)}”`:'no medium-impact drivers in the current feed.'}</Bul>
       <Bul><T w='700'>Basis: </T>{up} bullish vs {dn} bearish of {items.length} headlines tagged {asset} (last 72h, impact-weighted).</Bul></>}
     <T c={C.mut} s={10} style={{marginTop:8}}>Auto-generated from headline keywords — not analysis or a trade signal.</T></Card>}
-function News({news,trades}){
-  const {width}=useWindowDimensions(),wide=width>=900,[cat,setCat]=useState('Top Stories'),[asset,setAsset]=useState(null),[imp,setImp]=useState('ALL'),[sel,setSel]=useState(null);
+const NF0={cat:'Top Stories',asset:null,imp:'ALL',q:''};
+const ALIAS={usd:'USD',dollar:'USD',greenback:'USD',eur:'EUR',euro:'EUR',gbp:'GBP',pound:'GBP',sterling:'GBP',jpy:'JPY',yen:'JPY',chf:'CHF',franc:'CHF',cad:'CAD',loonie:'CAD',aud:'AUD',aussie:'AUD',nzd:'NZD',kiwi:'NZD',gold:'XAUUSD',xau:'XAUUSD',silver:'XAGUSD',xag:'XAGUSD'};
+function News({news,trades,nf,setNf}){
+  const {width}=useWindowDimensions(),wide=width>=900,{cat,asset,imp,q}=nf,setCat=v=>setNf({...nf,cat:v}),setAsset=v=>setNf({...nf,asset:v}),setImp=v=>setNf({...nf,imp:v}),setQ=v=>setNf({...nf,q:v}),[sel,setSel]=useState(null);
+  const toks=q.toLowerCase().split(/\s+/).filter(Boolean);
+  const inQ=n=>!toks.length||toks.every(t=>`${n.title} ${n.summary||''} ${n.source||''} ${n.driver||''} ${(n.cur||[]).join(' ')}`.toLowerCase().includes(t)||(ALIAS[t]&&n.cur?.includes(ALIAS[t])));
   const inCat=n=>cat==='Top Stories'||n.category===cat,inImp=n=>imp==='ALL'||n.impact===imp,inAsset=n=>!asset||n.cur?.includes(asset);
-  const L=news.filter(n=>inCat(n)&&inImp(n)&&inAsset(n)),cnt=x=>news.filter(n=>inCat(n)&&inImp(n)&&n.cur?.includes(x)).length,impCnt=k=>news.filter(n=>inCat(n)&&inAsset(n)&&(k==='ALL'||n.impact===k)).length;
+  const L=news.filter(n=>inCat(n)&&inImp(n)&&inAsset(n)&&inQ(n)),cnt=x=>news.filter(n=>inCat(n)&&inImp(n)&&inQ(n)&&n.cur?.includes(x)).length,impCnt=k=>news.filter(n=>inCat(n)&&inAsset(n)&&inQ(n)&&(k==='ALL'||n.impact===k)).length;
   const lead=L.find(n=>n.imageUrl&&n.impact==='HIGH')||L.find(n=>n.imageUrl)||L[0];
   const sub=lead?L.filter(n=>n.id!==lead.id&&(n.category===lead.category||n.cur?.some(c=>lead.cur?.includes(c)))).slice(0,3):[];
   const used=new Set([lead?.id,...sub.map(n=>n.id)]),rest=L.filter(n=>!used.has(n.id)),highs=rest.filter(n=>n.impact==='HIGH').slice(0,30),meds=rest.filter(n=>n.impact==='MEDIUM').slice(0,30),others=imp==='ALL'?rest.filter(n=>n.impact==='LOW').slice(0,20):[];
@@ -163,13 +169,16 @@ function News({news,trades}){
   const sec=(emoji,title,color,items)=>items.length?<View style={{marginTop:16}}><Row style={{borderLeftWidth:4,borderLeftColor:color,paddingLeft:10}}><T s={17} w='800'>{emoji} {title}</T><T c={C.mut} s={12}>{items.length} stories</T></Row>{items.map(story)}</View>:null;
   const main=<View style={{flex:1,width:'100%'}}>
     {!!asset&&<ImpactSummary asset={asset} news={news}/>}
-    {!lead&&(asset||imp!=='ALL'?<Card><T c={C.mut}>No stories match these filters yet — try “All Impact”, “Top Stories” or another asset.</T></Card>:<Wait/>)}
+    {!lead&&(asset||q||imp!=='ALL'?<Card><T c={C.mut}>No stories match these filters yet — try “All Impact”, “Top Stories” or another asset.</T></Card>:<Wait/>)}
     {lead&&<Card style={{padding:0,overflow:'hidden'}}><TouchableOpacity activeOpacity={.85} onPress={()=>setSel(lead)}><Thumb n={lead} big style={{width:'100%',height:wide?240:180}}/>
       <View style={{padding:14}}><Row style={{justifyContent:'flex-start',flexWrap:'wrap'}}><View style={{marginRight:8}}><Badge n={lead}/></View><ImpactTag n={lead}/></Row><T s={22} w='800' style={{marginTop:8}}>{lead.title}</T><T c={C.mut} s={12} style={{marginTop:4}}>{relT(lead)}</T></View></TouchableOpacity>
       {sub.map(r=><TouchableOpacity key={r.id} onPress={()=>setSel(r)} style={{borderTopWidth:1,borderTopColor:C.line,paddingHorizontal:14,paddingVertical:10}}><T s={14} w='600'>{r.title}</T><T c={C.mut} s={11} style={{marginTop:2}}>{r.source} · {relT(r)}</T></TouchableOpacity>)}</Card>}
     {sec('🔴','High Impact News','#ef4444',highs)}{sec('🟠','Medium Impact News','#f59e0b',meds)}{sec('📰','Other market news',C.mut,others)}</View>;
   const side=<View style={{width:wide?320:'100%',marginLeft:wide?20:0,marginTop:wide?0:12}}><Side title='Market movers' items={movers} pick={setSel}/><Side title='Picks for you · from your journal pairs' items={picks} pick={setSel}/></View>;
   return<><T s={24} w='800'>News</T><Note>Google News searches, FXStreet, CNBC, MarketWatch and central-bank feeds, refreshed every 15 minutes. Impact, tone and bias labels are keyword-based, not advice.</Note>
+    <Row style={{marginBottom:10}}><View style={{flex:1,flexDirection:'row',alignItems:'center',backgroundColor:C.card,borderWidth:1,borderColor:C.line,borderRadius:10,paddingHorizontal:10}}><Text style={{marginRight:6}}>🔍</Text>
+      <TextInput value={q} onChangeText={setQ} placeholder='Search headlines: Fed, CPI, rate decision, inflation, yen…' placeholderTextColor={C.mut} style={{flex:1,color:C.tx,paddingVertical:9,fontSize:14}}/>{!!q&&<TouchableOpacity onPress={()=>setQ('')}><T c={C.mut} s={16}>✕</T></TouchableOpacity>}</View>
+      {(q||asset||imp!=='ALL'||cat!=='Top Stories')&&<Btn t='Reset filters' on={()=>setNf(NF0)} style={{marginLeft:8,paddingVertical:9}}/>}</Row>
     <Pills opts={CATS.map(c=>[c,c])} val={cat} set={setCat}/>
     <Pills opts={[['ALL',`All Impact (${impCnt('ALL')})`],['HIGH',`🔴 High Impact (${impCnt('HIGH')})`],['MEDIUM',`🟠 Medium Impact (${impCnt('MEDIUM')})`]]} val={imp} set={setImp}/>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:10}}>
@@ -177,7 +186,7 @@ function News({news,trades}){
       {ASSETS.map(x=>{const on=asset===x,k=cnt(x);return<TouchableOpacity key={x} onPress={()=>setAsset(on?null:x)} style={{flexDirection:'row',alignItems:'center',paddingLeft:10,paddingRight:6,paddingVertical:6,borderRadius:16,marginRight:6,backgroundColor:on?'#e6ebff':C.card,borderWidth:1,borderColor:on?'#e6ebff':C.line}}>
         <View style={{width:8,height:8,borderRadius:4,backgroundColor:AS[x][0],marginRight:6}}/><T s={12} w='700' c={on?C.bg:C.tx}>{x}</T>
         <View style={{minWidth:22,marginLeft:6,paddingHorizontal:6,paddingVertical:1,borderRadius:10,backgroundColor:on?C.bg:k?C.ac:C.line,alignItems:'center'}}><T s={11} w='800' c={on||k?'#fff':C.mut}>{k}</T></View></TouchableOpacity>})}</ScrollView>
-    {asset&&<Row style={{marginBottom:10}}><T c={C.mut} s={13}>Showing <T w='700'>{L.length}</T> stories tagged <T w='700'>{asset}</T></T><Btn t='Clear ✕' on={()=>setAsset(null)} style={{paddingVertical:5}}/></Row>}
+    {(asset||q)&&<T c={C.mut} s={13} style={{marginBottom:10}}>Showing <T w='700'>{L.length}</T> stories{asset?<> tagged <T w='700'>{asset}</T></>:null}{q?<> matching “<T w='700'>{q}</T>”</>:null}</T>}
     <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{main}{side}</View><Reader n={sel} onClose={()=>setSel(null)}/></>;
 }
 function Risk({pre}){
@@ -207,6 +216,7 @@ function Journal({trades,setTrades}){
 }
 
 // ---------- time / sessions (IST)
+// ==SESS-START
 const IST=5.5*36e5,p2=n=>String(n).padStart(2,'0');
 const ist=t=>{const d=new Date(t+IST);return{h:d.getUTCHours(),m:d.getUTCMinutes(),s:d.getUTCSeconds(),wd:d.getUTCDay(),day:d.getUTCDate(),mon:d.getUTCMonth(),md:d.getUTCHours()*60+d.getUTCMinutes()}};
 const SESS=[['Tokyo',330,870],['London',810,1350],['New York',1110,210]];
@@ -216,6 +226,7 @@ const act=(s,t)=>{const i=ist(t);return!closedWk(i)&&inR(i.md,s[1],s[2])};
 const nextOpen=t=>{const t0=Math.floor(t/6e4)*6e4;for(let k=1;k<=8200;k++){const x=t0+k*6e4;for(const s of SESS)if(act(s,x)&&!act(s,x-6e4))return{name:s[0],t:x}}return null};
 const fmtCd=ms=>{const s=Math.max(0,Math.floor(ms/1e3)),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?`${d}d ${p2(h)}h`:h?`${p2(h)}h ${p2(m)}m`:`${p2(m)}m ${p2(s%60)}s`};
 const hm=m=>`${p2(Math.floor(m/60))}:${p2(m%60)}`;
+// ==SESS-END
 const useNow=()=>{const [t,setT]=useState(Date.now());useEffect(()=>{const i=setInterval(()=>setT(Date.now()),1000);return()=>clearInterval(i)},[]);return t};
 function SessionBar(){
   const now=useNow(),i=ist(now),mk=Math.floor(now/6e4),no=useMemo(()=>nextOpen(mk*6e4),[mk]),on=SESS.map(s=>act(s,now)),ov=on[1]&&on[2];
@@ -232,186 +243,24 @@ function NextHigh({cal}){
     {nx?<T s={13} w='700'>🔴 Next High-Impact: {nx.currency} {nx.title} in {fmtCd(new Date(nx.timestamp)-now)} <T c='#fecaca' w='400' s={12}>· Forecast {nx.forecast||'–'} vs Prev {nx.previous||'–'}</T></T>:<T c={C.mut} s={13}>No further high-impact releases on this week's calendar.</T>}</View>}
 const MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'],WD=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const num=s=>{if(s==null||s==='')return NaN;const m=String(s).trim().match(/^(-?[\d.,]+)\s*([KMBT%]?)/i);if(!m)return NaN;return parseFloat(m[1].replace(/,/g,''))*({K:1e3,M:1e6,B:1e9,T:1e12}[m[2].toUpperCase()]||1)};
-const verdict=e=>e.better===true?1:e.better===false?-1:0;
-const istDateKey=t=>{const d=new Date(new Date(t).getTime()+IST);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-${p2(d.getUTCDate())}`};
-const keyDate=k=>new Date(`${k}T00:00:00Z`);
-const addDays=(k,n)=>{const d=keyDate(k);d.setUTCDate(d.getUTCDate()+n);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-${p2(d.getUTCDate())}`};
-const todayKey=()=>istDateKey(new Date().toISOString());
-const dayLabel=k=>{const d=keyDate(k);return `${WD[d.getUTCDay()]} ${MN[d.getUTCMonth()]} ${d.getUTCDate()}`};
-const parseFFDate=v=>{const d=new Date(v);return isNaN(d)?null:d.toISOString()};
-function csvCells(line){const out=[];let s='',q=false;for(let i=0;i<line.length;i++){const c=line[i];if(c==='"'&&line[i+1]==='"'&&q){s+='"';i++}else if(c==='"')q=!q;else if(c===','&&!q){out.push(s);s=''}else s+=c}out.push(s);return out}
-function normalizeImportedCalendar(raw){
-  let rows=[];
-  if(Array.isArray(raw))rows=raw;
-  else if(typeof raw==='string'&&raw.trim().startsWith('['))rows=JSON.parse(raw);
-  else if(typeof raw==='string'){
-    const ls=raw.trim().split(/\r?\n/),heads=csvCells(ls.shift()).map(x=>x.trim().toLowerCase());
-    rows=ls.map(l=>Object.fromEntries(csvCells(l).map((v,i)=>[heads[i],v])));
-  }else if(raw&&Array.isArray(raw.items))rows=raw.items;
-  return rows.map((e,i)=>{
-    const get=(...keys)=>{for(const k of keys){const v=e[k]??e[k.toLowerCase()];if(v!=null&&v!=='')return v}return null};
-    const currency=String(get('currency','country')||'').toUpperCase(),title=String(get('title','event')||'Untitled event'),timestamp=parseFFDate(get('timestamp','date','datetime'));
-    if(!MAJ.includes(currency)||!timestamp)return null;
-    const actual=get('actual'),forecast=get('forecast'),a=num(actual),f=num(forecast),lower=/unemployment|jobless|claims|deficit|inventor/i.test(title);
-    const better=actual==null||forecast==null||!Number.isFinite(a)||!Number.isFinite(f)||a===f?null:(lower?a<f:a>f);
-    return{id:String(get('id')||`import-${i}-${timestamp}`),title,currency,impact:/high/i.test(String(get('impact')||''))?'High':/medium/i.test(String(get('impact')||''))?'Medium':'Low',timestamp,actual,forecast,previous:get('previous'),better};
-  }).filter(Boolean);
-}
-function EconCalendar({cal,fx}){
-  const {width}=useWindowDimensions(),wide=width>=1050,now=useNow();
-  const [cur,setCur]=useState('ALL'),[imp,setImp]=useState('ALL'),[search,setSearch]=useState(''),[range,setRange]=useState('This Week'),[anchor,setAnchor]=useState(todayKey()),[picked,setPicked]=useState(null),[detail,setDetail]=useState(null),[importOpen,setImportOpen]=useState(false),[paste,setPaste]=useState(''),[localItems,setLocalItems]=useState([]);
-  const all=[...(cal?.items||[]),...localItems],today=todayKey(),todayD=keyDate(today),weekday=todayD.getUTCDay(),weekStart=addDays(today,-((weekday+6)%7));
-  const bounds=()=>{
-    if(range==='Today')return[today,today];
-    if(range==='Tomorrow')return[addDays(today,1),addDays(today,1)];
-    if(range==='Yesterday')return[addDays(today,-1),addDays(today,-1)];
-    if(range==='This Week')return[weekStart,addDays(weekStart,6)];
-    if(range==='Next Week')return[addDays(weekStart,7),addDays(weekStart,13)];
-    if(range==='Last Week')return[addDays(weekStart,-7),addDays(weekStart,-1)];
-    if(range==='Selected Day')return[picked||today,picked||today];
-    return[weekStart,addDays(weekStart,6)];
-  };
-  const [from,to]=bounds();
-  const filtered=all.filter(e=>{const k=istDateKey(e.timestamp);return k>=from&&k<=to&&(cur==='ALL'||e.currency===cur)&&(imp==='ALL'||e.impact===imp)&&(!search||`${e.title} ${e.currency}`.toLowerCase().includes(search.toLowerCase()))}).sort((a,b)=>a.timestamp.localeCompare(b.timestamp));
-  const grouped={};filtered.forEach(e=>{const k=istDateKey(e.timestamp);(grouped[k]??=[]).push(e)});
-  const first=keyDate(`${anchor.slice(0,7)}-01`),offset=first.getUTCDay(),days=new Date(Date.UTC(first.getUTCFullYear(),first.getUTCMonth()+1,0)).getUTCDate();
-  const rates=MAJ.map(c=>({c,v:fx?.data?.[c]?.rate?.value})).filter(x=>x.v!=null&&!isNaN(Number(x.v))).sort((a,b)=>Number(b.v)-Number(a.v));
-  const next=all.filter(e=>e.impact==='High'&&new Date(e.timestamp)>now).sort((a,b)=>a.timestamp.localeCompare(b.timestamp))[0];
-  const jumpNext=()=>{if(next){const k=istDateKey(next.timestamp);setPicked(k);setAnchor(k);setRange('Selected Day');setCur('ALL');setImp('ALL')}};
-  const dc={High:'#ef4444',Medium:'#f59e0b',Low:'#eab308'};
-  const ranges=['Today','Tomorrow','This Week','Next Week','Yesterday','Last Week'];
-  const importData=()=>{try{const rows=normalizeImportedCalendar(paste);if(!rows.length)throw new Error('No valid events found. Check the JSON/CSV headers and currency/date fields.');setLocalItems(rows);setImportOpen(false);setRange('This Week');setPicked(null);setPaste('');Alert.alert('Import complete',`${rows.length} events loaded locally.`)}catch(e){Alert.alert('Import failed',e.message)}};
-  const dateCells=Array.from({length:offset},(_,i)=>({blank:true,key:`blank-${i}`})).concat(Array.from({length:days},(_,i)=>{const k=`${first.getUTCFullYear()}-${p2(first.getUTCMonth()+1)}-${p2(i+1)}`;return{key:k,day:i+1}}));
-  const eventPairs=c=>({USD:'EURUSD · GBPUSD · AUDUSD · NZDUSD · USDJPY · USDCHF · USDCAD',EUR:'EURUSD · EURGBP · EURJPY · EURCHF · EURAUD · EURCAD · EURNZD',GBP:'GBPUSD · EURGBP · GBPJPY · GBPCHF · GBPAUD · GBPCAD · GBPNZD',JPY:'USDJPY · EURJPY · GBPJPY · AUDJPY · CADJPY · CHFJPY · NZDJPY',CHF:'USDCHF · EURCHF · GBPCHF · AUDCHF · CADCHF · NZDCHF',CAD:'USDCAD · EURCAD · GBPCAD · AUDCAD · NZDCAD',AUD:'AUDUSD · EURAUD · GBPAUD · AUDJPY · AUDCAD · AUDNZD',NZD:'NZDUSD · EURNZD · GBPNZD · AUDNZD · NZDJPY · NZDCAD'}[c]||'');
-
-  const COL={time:54,currency:52,impact:68,detail:58,actual:66,forecast:66,previous:66};
-  const MIN_W=680;
-  const cell=(w,align='left')=>({width:w,flexShrink:0,textAlign:align,paddingHorizontal:5});
-  const evStyle={flex:1,minWidth:150,paddingHorizontal:6};
-
-  const EventRow=({e})=>{
-    const d=ist(new Date(e.timestamp).getTime()),v=verdict(e);
-    return<View style={{width:'100%',flexDirection:'row',alignItems:'center',minHeight:42,paddingVertical:7,borderTopWidth:1,borderTopColor:C.line,backgroundColor:C.bg}}>
-      <T s={11} w='700' c={C.mut} style={cell(COL.time)}>{p2(d.h)}:{p2(d.m)}</T>
-      <T s={11} w='800' c={C.ac} style={cell(COL.currency)}>{e.currency}</T>
-      <View style={{...cell(COL.impact),flexDirection:'row',alignItems:'center'}}>
-        <View style={{width:7,height:7,borderRadius:4,backgroundColor:dc[e.impact]||C.mut,marginRight:5}}/>
-        <T s={10} c={dc[e.impact]||C.mut}>{e.impact}</T>
-      </View>
-      <T s={12} style={evStyle}>{e.title}</T>
-      <View style={{width:COL.detail,flexShrink:0,paddingHorizontal:4}}>
-        <TouchableOpacity accessibilityRole='button' accessibilityLabel={`View details for ${e.title}`} onPress={()=>setDetail(e)} style={{alignSelf:'flex-start',paddingVertical:4,paddingHorizontal:8,borderRadius:6,backgroundColor:'#1d315f',borderWidth:1,borderColor:'#2d4b85'}}>
-          <T s={10} w='700' c='#bfdbfe'>View</T>
-        </TouchableOpacity>
-      </View>
-      <T s={11} w='700' c={v>0?C.up:v<0?C.dn:C.tx} style={cell(COL.actual,'right')}>{e.actual??'—'}</T>
-      <T s={11} c={C.mut} style={cell(COL.forecast,'right')}>{e.forecast??'—'}</T>
-      <T s={11} c={C.mut} style={cell(COL.previous,'right')}>{e.previous??'—'}</T>
-    </View>;
-  };
-
-  const side=<View style={{width:wide?235:'100%',marginRight:wide?12:0}}>
-    <Card title='Month at a glance'>
-      <Row style={{marginBottom:10}}>
-        <TouchableOpacity onPress={()=>setAnchor(k=>{const d=keyDate(`${k.slice(0,7)}-01`);d.setUTCMonth(d.getUTCMonth()-1);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-01`})}><T s={20}>‹</T></TouchableOpacity>
-        <T w='800'>{MN[first.getUTCMonth()]} {first.getUTCFullYear()}</T>
-        <TouchableOpacity onPress={()=>setAnchor(k=>{const d=keyDate(`${k.slice(0,7)}-01`);d.setUTCMonth(d.getUTCMonth()+1);return `${d.getUTCFullYear()}-${p2(d.getUTCMonth()+1)}-01`})}><T s={20}>›</T></TouchableOpacity>
-      </Row>
-      <View style={{flexDirection:'row',flexWrap:'wrap'}}>
-        {WD.map(x=><T key={x} s={10} c={C.mut} style={{width:'14.28%',textAlign:'center',paddingVertical:5}}>{x[0]}</T>)}
-        {dateCells.map(x=><TouchableOpacity key={x.key} disabled={x.blank} onPress={()=>{setPicked(x.key);setRange('Selected Day')}} style={{width:'14.28%',height:32,alignItems:'center',justifyContent:'center',borderRadius:7,backgroundColor:x.key===picked?'#1d4ed8':x.key===today?'#1e3a5f':'transparent'}}><T s={11} c={x.blank?C.mut:x.key===picked?'#fff':C.tx}>{x.day||''}</T></TouchableOpacity>)}
-      </View>
-    </Card>
-    <Card title='Quick date ranges'>
-      <View style={{flexDirection:'row',flexWrap:'wrap'}}>
-        {ranges.map(r=><TouchableOpacity key={r} onPress={()=>{setRange(r);setPicked(null)}} style={{paddingHorizontal:8,paddingVertical:6,margin:2,borderRadius:7,backgroundColor:range===r?C.ac:C.line}}><T s={11} w='700'>{r}</T></TouchableOpacity>)}
-        <TouchableOpacity onPress={jumpNext} style={{paddingHorizontal:10,paddingVertical:6,margin:2,borderRadius:7,backgroundColor:'#14532d',borderWidth:1,borderColor:C.up}}><T s={11} w='800' c='#bbf7d0'>↗ Up Next</T></TouchableOpacity>
-      </View>
-    </Card>
-    <Card title='Central bank policy rates'>
-      <Note>Live values from Fundamentals API · sorted high to low</Note>
-      {rates.length?rates.map(x=><Row key={x.c} style={{paddingVertical:4}}><T w='700' s={12}>{x.c}</T><T w='700' s={12} c={C.up}>{f2(x.v)}%</T></Row>):<T s={12} c={C.mut}>Policy rates unavailable.</T>}
-    </Card>
-    <Card title='Legend'>
-      <Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.High,marginRight:7}}/><T s={11}>High impact</T></Row>
-      <Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.Medium,marginRight:7}}/><T s={11}>Medium impact</T></Row>
-      <Row style={{justifyContent:'flex-start',marginBottom:5}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc.Low,marginRight:7}}/><T s={11}>Low impact</T></Row>
-      <T s={11} c={C.up}>Green number · better than forecast</T>
-      <T s={11} c={C.dn}>Red number · worse than forecast</T>
-    </Card>
-    <Btn t='Import FF JSON/CSV' on={()=>setImportOpen(true)}/>
-  </View>;
-
-  const main=<View style={{flex:1,minWidth:0}}>
-    <T s={22} w='800'>Economic calendar</T>
-    <Note>{range}: {dayLabel(from)} – {dayLabel(to)} · Times shown in IST (Asia/Kolkata). {cal?.source||'Waiting for calendar data.'}{cal?.warning?` · ${cal.warning}`:''}{cal?.stale?' · Showing stale cache.':''}</Note>
+const verdict=e=>{const a=num(e.actual),f=num(e.forecast);if(isNaN(a)||isNaN(f)||a===f)return 0;return((a>f)!==/unemployment|jobless|claims|deficit/i.test(e.title))?1:-1};
+function EconCalendar({cal}){
+  const [cur,setCur]=useState('ALL'),[imp,setImp]=useState('ALL'),now=useNow();
+  if(!cal)return<Wait/>;
+  const L=(cal.items||[]).filter(e=>(cur==='ALL'||e.currency===cur)&&(imp==='ALL'||e.impact===imp)),days={};
+  L.forEach(e=>{const d=ist(new Date(e.timestamp).getTime()),k=`${WD[d.wd]} ${d.day} ${MN[d.mon]}`;(days[k]??=[]).push(e)});
+  const dc={High:C.dn,Medium:'#f59e0b',Low:C.mut};
+  return<><T s={24} w='800'>Economic calendar</T><Note>All times in IST (Asia/Kolkata). {cal.source} Actual is green if better than forecast, red if worse (for unemployment, claims and deficits lower is better).{cal.stale?' Showing stale cache.':''}</Note>
     <Pills opts={[['ALL','All'],...MAJ.map(c=>[c,c])]} val={cur} set={setCur}/>
-    <Pills opts={[['ALL','All'],['High','High'],['Medium','Medium'],['Low','Low']]} val={imp} set={setImp}/>
-    <TextInput value={search} onChangeText={setSearch} placeholder='⌕  Search Events' placeholderTextColor={C.mut} style={{color:C.tx,backgroundColor:C.card,borderWidth:1,borderColor:C.line,borderRadius:8,paddingHorizontal:12,paddingVertical:9,marginBottom:10}}/>
-
-    <Card style={{padding:0,overflow:'hidden'}}>
-      <ScrollView horizontal={!wide} showsHorizontalScrollIndicator contentContainerStyle={{width:wide?'100%':undefined,minWidth:wide?'100%':MIN_W}}>
-        <View style={{width:'100%',minWidth:wide?0:MIN_W}}>
-                    <View style={{width:'100%',flexDirection:'row',alignItems:'center',paddingVertical:10,backgroundColor:'#172448',borderBottomWidth:1,borderBottomColor:C.line}}>
-            <T s={10} w='800' c={C.mut} style={cell(COL.time)}>TIME</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.currency)}>CCY</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.impact)}>IMPACT</T>
-            <T s={10} w='800' c={C.mut} style={evStyle}>EVENT</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.detail)}>DETAIL</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.actual,'right')}>ACTUAL</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.forecast,'right')}>FCST</T>
-            <T s={10} w='800' c={C.mut} style={cell(COL.previous,'right')}>PREV</T>
-          </View>
-          {!filtered.length?<View style={{padding:18}}><T c={C.mut}>No events match this date range and filters.</T></View>:Object.entries(grouped).map(([k,ev])=><View key={k} style={{width:'100%'}}>
-            <View style={{backgroundColor:'#172448',padding:8}}><T s={12} w='800'>{dayLabel(k)} <T c={C.mut} s={10}>· {ev.length} events</T></T></View>
-            {ev.map(e=><EventRow key={e.id} e={e}/>)}
-          </View>)}
-        </View>
-      </ScrollView>
-    </Card>
-    <T c={C.mut} s={10}>Select View in the Detail column to open release figures and commonly affected currency pairs.</T>
-  </View>;
-
-  return<>
-    <View style={{flexDirection:wide?'row':'column',alignItems:'flex-start'}}>{side}{main}</View>
-
-    <Modal transparent animationType='slide' visible={importOpen} onRequestClose={()=>setImportOpen(false)}>
-      <View style={{flex:1,backgroundColor:'rgba(0,0,0,.72)',justifyContent:'center',padding:wide?40:12}}>
-        <View style={{backgroundColor:C.card,borderRadius:12,padding:16,borderWidth:1,borderColor:C.line,maxHeight:'90%'}}>
-          <Row><T s={18} w='800'>Import FF JSON/CSV</T><TouchableOpacity onPress={()=>setImportOpen(false)}><T s={20}>✕</T></TouchableOpacity></Row>
-          <Note>Paste a Forex Factory weekly JSON or CSV export. Supported columns: Date/Time, Currency/Country, Title/Event, Impact, Actual, Forecast, Previous.</Note>
-          <TextInput value={paste} onChangeText={setPaste} multiline placeholder='Paste JSON or CSV here…' placeholderTextColor={C.mut} textAlignVertical='top' style={{minHeight:210,maxHeight:380,color:C.tx,backgroundColor:C.bg,borderColor:C.line,borderWidth:1,borderRadius:8,padding:10}}/>
-          <Row style={{marginTop:10}}><Btn t='Cancel' on={()=>setImportOpen(false)}/><Btn primary t='Import events' on={importData}/></Row>
-        </View>
-      </View>
-    </Modal>
-
-    <Modal transparent animationType='slide' visible={!!detail} onRequestClose={()=>setDetail(null)}>
-      <View style={{flex:1,backgroundColor:'rgba(0,0,0,.7)',justifyContent:'flex-end',alignItems:'flex-end'}}>
-        <TouchableOpacity onPress={()=>setDetail(null)} style={{position:'absolute',top:0,left:0,right:0,bottom:0}}/>
-        <View style={{width:wide?480:'100%',maxHeight:'85%',backgroundColor:C.bg,borderTopLeftRadius:14,borderTopRightRadius:14,borderWidth:1,borderColor:C.line,padding:18}}>
-          {detail&&<>
-            <Row><T s={11} c={C.mut} w='800'>EVENT DETAILS</T><TouchableOpacity onPress={()=>setDetail(null)}><T s={20}>✕</T></TouchableOpacity></Row>
-            <T s={21} w='800' style={{marginVertical:12}}>{detail.title}</T>
-            <Row>
-              <T c={C.ac} w='800'>{detail.currency}</T>
-              <T c={dc[detail.impact]} w='800'>{detail.impact} Impact</T>
-              <T c={C.mut} s={12}>{new Date(detail.timestamp).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',dateStyle:'medium',timeStyle:'short'})} IST</T>
-            </Row>
-            <Card title='Release figures'>
-              <Row><T c={C.mut}>Actual</T><T c={verdict(detail)>0?C.up:verdict(detail)<0?C.dn:C.tx} w='800'>{detail.actual??'—'}</T></Row>
-              <Row><T c={C.mut}>Forecast</T><T>{detail.forecast??'—'}</T></Row>
-              <Row><T c={C.mut}>Previous</T><T>{detail.previous??'—'}</T></Row>
-            </Card>
-            <Card title='Commonly affected pairs'><T s={12}>{eventPairs(detail.currency)}</T></Card>
-            <T s={10} c={C.mut}>Better/worse classification is an indicator-direction heuristic. Always verify the release definition and market reaction.</T>
-          </>}
-        </View>
-      </View>
-    </Modal>
-  </>;
-}
-
+    <Pills opts={[['ALL','All'],['High','🔴 High Impact'],['Medium','🟠 Medium Impact']]} val={imp} set={setImp}/>
+    {!L.length&&<Card><T c={C.mut}>No events match these filters.</T></Card>}
+    {Object.entries(days).map(([day,ev])=><Card key={day} title={day}>
+      <Row style={{paddingBottom:4}}><T c={C.mut} s={10} style={{width:48}}>IST</T><T c={C.mut} s={10} style={{flex:1}}>EVENT</T><View style={{width:156,flexDirection:'row'}}>{['ACTUAL','FCST','PREV'].map(h=><T key={h} c={C.mut} s={10} style={{flex:1,textAlign:'right'}}>{h}</T>)}</View></Row>
+      {ev.map((e,i)=>{const d=ist(new Date(e.timestamp).getTime()),past=new Date(e.timestamp)<now,v=verdict(e);
+        return<Row key={i} style={{alignItems:'flex-start',paddingVertical:9,borderTopWidth:1,borderTopColor:C.line,opacity:past?.7:1}}>
+          <T s={13} w='700' style={{width:48}}>{p2(d.h)}:{p2(d.m)}</T>
+          <View style={{flex:1,paddingRight:6}}><Row style={{justifyContent:'flex-start'}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc[e.impact],marginRight:6}}/><T c={C.ac} s={12} w='800'>{e.currency}</T></Row><T s={13}>{e.title}</T></View>
+          <View style={{width:156,flexDirection:'row'}}><T s={12} w='800' c={v>0?C.up:v<0?C.dn:C.tx} style={{flex:1,textAlign:'right'}}>{e.actual||'—'}</T><T s={12} style={{flex:1,textAlign:'right'}}>{e.forecast||'—'}</T><T s={12} c={C.mut} style={{flex:1,textAlign:'right'}}>{e.previous||'—'}</T></View></Row>})}</Card>)}</>}
 function LineChart({data,color,h=140}){
   const [w,setW]=useState(0),lo=Math.min(...data),hi=Math.max(...data),X=i=>i*(w/(data.length-1)),Y=v=>h-6-(v-lo)/((hi-lo)||1)*(h-12);
   return<View onLayout={e=>setW(e.nativeEvent.layout.width)} style={{height:h,backgroundColor:C.bg,borderRadius:8,overflow:'hidden',borderWidth:1,borderColor:C.line}}>
@@ -444,40 +293,98 @@ function PairModal({p,A,sc,fx,cot,send,onClose}){
           <T c={C.mut} s={10} style={{marginTop:6}}>Weekly report published Fridays (positions as of Tuesday). Positioning is context, not a signal.</T></Card>
         <Btn primary t='Send to Risk Calculator →' on={()=>send({pair:b+q,entry:f2(p.price,dp),size:jpy?'0.01':'0.0001'})} style={{alignSelf:'flex-start'}}/>
       </ScrollView></View></View></Modal>}
-
+// ---------- weekly picks & pair opinion (rules-based, from live data)
+const wkKey=t=>{const d=new Date(t+IST),diff=(d.getUTCDay()+6)%7;return new Date(d.getTime()-diff*864e5).toISOString().slice(0,10)};
+const TAGS={Stance:'Hawkish vs. Dovish Spread',Rate:'Rate Differential',GDP:'Stronger GDP',CPI:'Sticky CPI',Unemp:'Tighter Labour Market',Mom:'1M Momentum'};
+function breakdown(b,q,dir,D,A){
+  const g=(c,m)=>D[c]?.[m]?.value,out=[],ok=x=>x!=null&&!isNaN(x),F=(c,m)=>ok(g(c,m))?f2(g(c,m)):'n/a';
+  const add=(k,d,th,detail)=>{if(ok(d))out.push({k,tag:TAGS[k],detail,fav:Math.abs(d)<th?0:d*dir>0?1:-1})};
+  add('Stance',g(b,'stance')-g(q,'stance'),1,`stance ${b} ${g(b,'stance')??'n/a'} vs ${q} ${g(q,'stance')??'n/a'} (policy-rate trend proxy)`);
+  add('Rate',g(b,'rate')-g(q,'rate'),.5,`policy rate ${F(b,'rate')}% vs ${F(q,'rate')}%`);
+  add('GDP',g(b,'gdp')-g(q,'gdp'),.5,`GDP y/y ${F(b,'gdp')}% vs ${F(q,'gdp')}%`);
+  add('CPI',g(b,'cpi')-g(q,'cpi'),.5,`CPI y/y ${F(b,'cpi')}% vs ${F(q,'cpi')}% (context only, not in the score)`);
+  add('Unemp',g(q,'unemp')-g(b,'unemp'),.5,`unemployment ${F(b,'unemp')}% vs ${F(q,'unemp')}% (lower = tighter)`);
+  add('Mom',A.str[21][b]-A.str[21][q],.5,`1M strength ${f2(A.str[21][b])}% vs ${f2(A.str[21][q])}%`);
+  return out}
+function opine(str,bias,note,{A,sc,fx,cal,news,snap}){
+  const s=str.replace(/[^A-Za-z]/g,'').toUpperCase(),b=s.slice(0,3),q=s.slice(3,6);
+  if(s.length!==6||!CUR.includes(b)||!CUR.includes(q)||b===q)return{err:'Enter two different majors from USD, EUR, GBP, JPY, CHF, CAD, AUD, NZD (e.g. USD/JPY or NZDCHF).'};
+  const dir=bias==='Long'?1:-1,D=fx?.data||{},gap=sc[b].s-sc[q].s,eff=gap*dir,fb=breakdown(b,q,dir,D,A),nf=fb.filter(x=>x.fav===1).length,na=fb.filter(x=>x.fav===-1).length,comp=Math.min(sc[b].n,sc[q].n)/5;
+  const verdict=Math.abs(gap)<=1?['Neutral — no clear fundamental edge for this pair',C.mut]:eff>0?['Supported by the fundamental scores',C.up]:['Against the fundamental scores',C.dn];
+  const i=CUR.indexOf(b),j=CUR.indexOf(q),cbq=A.corr[i][j],risk=[];
+  const top=c=>{const k=CUR.indexOf(c);return CUR.map((x,m)=>[x,A.corr[k][m]]).filter(([x])=>x!==b&&x!==q).sort((x,y)=>Math.abs(y[1])-Math.abs(x[1]))[0]};
+  [b,q].forEach(c=>{const t=top(c);if(t&&Math.abs(t[1])>=.5)risk.push(`${c} strength is ${t[1]>0?'positively':'negatively'} correlated with ${t[0]} (${t[1]>0?'+':''}${t[1].toFixed(2)}, 60d) — a second trade on ${t[0]} would ${t[1]>0?'stack':'partly hedge'} the same risk.`)});
+  if(cbq>.5)risk.push(`${b} and ${q} strength have been moving together (corr +${cbq.toFixed(2)}), which tends to mute the pair.`);else risk.push(`${b} vs ${q} strength correlation is ${cbq>0?'+':''}${cbq.toFixed(2)} (60d) — no unusual co-movement.`);
+  const ex={[b]:dir,[q]:-dir};[...(snap?.long||[]).map(p=>({...p,d:1})),...(snap?.short||[]).map(p=>({...p,d:-1}))].forEach(p=>{if(p.b===b&&p.q===q)return;const e2={[p.b]:p.d,[p.q]:-p.d},sh=Object.keys(ex).filter(c=>e2[c]&&e2[c]===ex[c]);if(sh.length)risk.push(`Same-direction ${sh.join('/')} exposure as this week's ${p.d>0?'long':'short'} pick ${p.pair}.`)});
+  const now=Date.now(),ev=(cal?.items||[]).filter(e=>e.impact==='High'&&(e.currency===b||e.currency===q)&&new Date(e.timestamp)>now).slice(0,6).map(e=>{const d=ist(new Date(e.timestamp).getTime());return`${e.currency} ${e.title} — ${WD[d.wd]} ${p2(d.h)}:${p2(d.m)} IST (in ${fmtCd(new Date(e.timestamp)-now)}) · fcst ${e.forecast||'–'} vs prev ${e.previous||'–'}`});
+  const hn=news.filter(n=>n.impact==='HIGH'&&n.cur?.some(c=>c===b||c===q)&&Date.now()-new Date(n.time)<72*36e5);
+  if(hn.length)risk.push(`${hn.length} high-impact headline(s) tagged ${b}/${q} in the last 72h — check the News tab.`);
+  if(comp<.6)risk.push(`Only ${Math.round(comp*100)}% of score inputs available for this pair — treat the score cautiously.`);
+  return{b,q,bias,note,gap,verdict,fb,ev,risk,comp,sum:`Your ${bias} ${b}/${q} idea: composite ${b} ${f2(sc[b].s)} vs ${q} ${f2(sc[q].s)} (gap ${f2(gap)}); ${nf} factor(s) support it, ${na} contradict it.`}}
+function Picks({A,sc,fx,cal,news}){
+  const [snap,setSnap]=useState(null),[form,setForm]=useState({pair:'',bias:'Long',note:''}),[res,setRes]=useState(null),wk=wkKey(Date.now()),D=fx?.data||{},rows=useMemo(()=>A?pairRows(A,sc):[],[A,sc]);
+  const build=()=>{const mk=p=>({pair:p.b+'/'+p.q,b:p.b,q:p.q,gap:p.gap,price:p.price,comp:p.comp,tags:breakdown(p.b,p.q,Math.sign(p.gap),D,A).filter(x=>x.fav===1).map(x=>x.tag)}),ok=rows.filter(p=>p.comp>=.6);
+    return{week:wk,at:Date.now(),long:ok.filter(p=>p.gap>1).sort((x,y)=>y.gap-x.gap).slice(0,3).map(mk),short:ok.filter(p=>p.gap<-1).sort((x,y)=>x.gap-y.gap).slice(0,3).map(mk)}};
+  const refresh=()=>{const n=build();setSnap(n);store.set('picks',n)};
+  useEffect(()=>{if(!A||!fx)return;let off=false;(async()=>{const s=await store.get('picks',null);if(off)return;if(s&&s.week===wk)setSnap(s);else refresh()})();return()=>{off=true}},[!!A,!!fx,wk]);
+  if(!A||!fx)return<Wait/>;
+  const run=(pair,bias,note)=>setRes(opine(pair,bias,note,{A,sc,fx,cal,news,snap}));
+  const card=(p,L)=>{const cur=rows.find(r=>r.b===p.b&&r.q===p.q),ng=cur?cur.gap:null,still=ng!=null&&Math.sign(ng)===Math.sign(p.gap)&&Math.abs(ng)>1,bias=L?'Long':'Short';
+    return<Card key={p.pair}><Row><T s={17} w='800'>{p.pair}</T><View style={{backgroundColor:L?'#14532d':'#7f1d1d',borderRadius:6,paddingHorizontal:8,paddingVertical:2}}><T s={11} w='800' c={L?'#bbf7d0':'#fecaca'}>{bias.toUpperCase()}</T></View></Row>
+      <T c={C.mut} s={12} style={{marginVertical:4}}>Ref {f2(p.price,p.q==='JPY'?3:5)} · gap {f2(p.gap)} at snapshot, {f2(ng)} now · <T c={still?C.up:'#f59e0b'} s={12} w='700'>{still?'still valid':'weakened'}</T> · data {Math.round(p.comp*100)}%</T>
+      <View style={{flexDirection:'row',flexWrap:'wrap'}}>{p.tags.length?p.tags.map(t=><Chip key={t} t={t} c={L?C.up:C.dn}/>):<T c={C.mut} s={12}>Driven mainly by the composite score gap.</T>}</View>
+      <Btn t='Get opinion' on={()=>{setForm({pair:p.pair,bias,note:''});run(p.pair,bias,'')}} style={{alignSelf:'flex-start',marginTop:6}}/></Card>};
+  const d=new Date(wk+'T00:00:00Z');
+  return<><T s={24} w='800'>Weekly top picks</T>
+    <Note>Ranked from the composite macro score gap (policy-rate differential, GDP, unemployment, central-bank stance proxy, 1M momentum). Week of {WD[1]} {d.getUTCDate()} {MN[d.getUTCMonth()]} {d.getUTCFullYear()} (IST) — the list is locked at the first load each week; “now” shows the live gap. Research aid, not trade signals or advice.</Note>
+    <Row style={{marginBottom:10}}><T c={C.mut} s={12}>{snap?`Snapshot taken ${new Date(snap.at).toLocaleString()}`:'Building snapshot…'}</T><Btn t='Recompute now' on={refresh} style={{paddingVertical:5}}/></Row>
+    {snap&&<><T s={16} w='800' style={{marginBottom:8}}>🟢 Top long setups</T>{snap.long.length?snap.long.map(p=>card(p,true)):<Card><T c={C.mut}>No pair currently has a gap above +1 with ≥60% data.</T></Card>}
+      <T s={16} w='800' style={{marginVertical:8}}>🔴 Top short setups</T>{snap.short.length?snap.short.map(p=>card(p,false)):<Card><T c={C.mut}>No pair currently has a gap below −1 with ≥60% data.</T></Card>}</>}
+    <Card title='Your trade idea → data-backed opinion'>
+      <Row style={{marginBottom:8}}><Inp label='Pair (e.g. USD/JPY, NZD/CHF)' v={form.pair} set={v=>setForm({...form,pair:v})} kb='default' flex={2}/><Btn t={form.bias} on={()=>setForm({...form,bias:form.bias==='Long'?'Short':'Long'})} style={{alignSelf:'flex-end'}}/></Row>
+      <Inp label='Your note / thesis (optional)' v={form.note} set={v=>setForm({...form,note:v})} kb='default'/>
+      <Btn primary t='Generate opinion' on={()=>run(form.pair,form.bias,form.note)} style={{alignSelf:'flex-start',marginTop:10}}/></Card>
+    {res&&(res.err?<Card><T c={C.dn}>{res.err}</T></Card>:<Card style={{borderLeftWidth:4,borderLeftColor:res.verdict[1]}}>
+      <T s={17} w='800'>{res.bias} {res.b}/{res.q}</T><T c={res.verdict[1]} w='700' s={14} style={{marginTop:2}}>{res.verdict[0]}</T><T s={13} style={{marginTop:6}}>{res.sum}</T>
+      {!!res.note&&<T c={C.mut} s={12} style={{marginTop:6}}>Your note: “{res.note}”</T>}
+      <T c={C.mut} s={11} w='700' style={{marginTop:10}}>FACTORS (for your {res.bias.toLowerCase()})</T>{res.fb.map(x=><T key={x.k} s={13} c={x.fav>0?C.up:x.fav<0?C.dn:C.mut} style={{marginTop:2}}>{x.fav>0?'✓':x.fav<0?'✗':'•'} {x.tag}: {x.detail}</T>)}
+      <T c={C.mut} s={11} w='700' style={{marginTop:10}}>RISKS & CORRELATION</T>{res.risk.map((r,i)=><T key={i} s={13} style={{marginTop:2}}>• {r}</T>)}
+      <T c={C.mut} s={11} w='700' style={{marginTop:10}}>UPCOMING HIGH-IMPACT EVENTS ({res.b}/{res.q})</T>{cal?(res.ev.length?res.ev.map((e,i)=><T key={i} s={13} style={{marginTop:2}}>🔴 {e}</T>):<T s={13} c={C.mut}>None on this week's calendar.</T>):<T s={13} c={C.mut}>Calendar not loaded.</T>}
+      <T c={C.mut} s={10} style={{marginTop:10}}>Auto-generated from live scores, rate data, correlations and the calendar using fixed rules (not a language model). Objective context only — not financial advice.</T></Card>)}</>}
 // ---------- app shell
-const NAV=[['Analysis',[[0,'Daily brief','◐'],[1,'Fundamentals','◎'],[2,'Currency pairs','⇄'],[3,'Macro & rates','▤']]],['Market',[[4,'News','☰'],[7,'Economic calendar','◷']]],['Tools',[[5,'Risk calculator','▣'],[6,'Trade journal','✎']]]];
-const TABS=[['Brief',0],['Scores',1],['Pairs',2],['Macro',3],['News',4],['Cal',7],['Risk',5],['Journal',6]];
+const NAV=[['Analysis',[[0,'Daily brief','◐'],[8,'Weekly top picks','★'],[1,'Fundamentals','◎'],[2,'Currency pairs','⇄'],[3,'Macro & rates','▤']]],['Market',[[4,'News','☰'],[7,'Economic calendar','◷']]],['Tools',[[5,'Risk calculator','▣'],[6,'Trade journal','✎']]]];
+const TABS=[['Brief',0],['Picks',8],['Scores',1],['Pairs',2],['Macro',3],['News',4],['Calendar',7],['Risk',5],['Journal',6]];
 export default function App(){
   const {width}=useWindowDimensions(),wide=width>=900;
-  const [tab,setTab]=useState(0),[hist,setHist]=useState(null),[dash,setDash]=useState(null),[fx,setFx]=useState(null),[cal,setCal]=useState(null),[cot,setCot]=useState(null),[news,setNews]=useState([]),[conn,setConn]=useState('…'),[busy,setBusy]=useState(false),[trades,setTrades]=useState([]),[pre,setPre]=useState(null);
+  const [tab,setTab]=useState(0),[hist,setHist]=useState(null),[dash,setDash]=useState(null),[fx,setFx]=useState(null),[cal,setCal]=useState(null),[cot,setCot]=useState(null),[news,setNews]=useState([]),[conn,setConn]=useState('…'),[busy,setBusy]=useState(false),[trades,setTrades]=useState([]),[pre,setPre]=useState(null),[nf,setNfS]=useState(NF0);
+  const setNf=v=>{setNfS(v);store.set('newsf',v)};
   const seen=useRef(null);
   const loadNews=async()=>{
     try{const r=await fetch(API+'/api/news');if(!r.ok)throw 0;const items=(await r.json()).items||[];
       if(seen.current)items.filter(i=>i.impact==='HIGH'&&!seen.current.has(i.id)).slice(0,3).forEach(i=>Notifications.scheduleNotificationAsync({content:{title:'HIGH impact · '+i.cur.join('/'),body:i.title},trigger:null}).catch(()=>{}));
       seen.current=new Set([...(seen.current||[]),...items.map(i=>i.id)]);setNews(items);store.set('news',items);return true}
     catch{const c=await store.get('news',[]);setNews(c);return false}};
-  const refresh=async()=>{setBusy(true);const ok=await Promise.all([load('/api/history','hist',setHist),load('/api/dashboard','dash',setDash),load('/api/fundamentals','fx',setFx),load('/api/calendar','cal',setCal),load('/api/cot','cot',setCot),loadNews()]);setConn(ok.every(Boolean)?'LIVE':ok.some(Boolean)?'PARTIAL':'OFFLINE · cached');setBusy(false)};
-  useEffect(()=>{(async()=>{setTrades(await store.get('trades',[]));
+  const refresh=async(force)=>{setBusy(true);const q=force===true?'?force=1':'';const ok=await Promise.all([load('/api/history','hist',setHist),load('/api/dashboard','dash',setDash),load('/api/fundamentals'+q,'fx',setFx),load('/api/calendar'+q,'cal',setCal),load('/api/cot','cot',setCot),loadNews()]);setConn(ok.every(Boolean)?'LIVE':ok.some(Boolean)?'PARTIAL':'OFFLINE · cached');setBusy(false)};
+  useEffect(()=>{(async()=>{setTrades(await store.get('trades',[]));const f=await store.get('newsf',null);if(f)setNfS({...NF0,...f});
     if(Platform.OS!=='web'){try{await Notifications.setNotificationChannelAsync('news',{name:'High-impact news',importance:Notifications.AndroidImportance.HIGH});await Notifications.requestPermissionsAsync()}catch{}}
-    refresh()})();const i=setInterval(loadNews,30000),j=setInterval(()=>load('/api/calendar','cal',setCal),3e5);return()=>{clearInterval(i);clearInterval(j)}},[]);
+    refresh()})();const i=setInterval(loadNews,30000),j=setInterval(()=>load('/api/calendar','cal',setCal),3e5),k=setInterval(()=>load('/api/fundamentals','fx',setFx),18e5);return()=>{clearInterval(i);clearInterval(j);clearInterval(k)}},[]);
   const fund=useMemo(()=>{const o={};CUR.forEach(c=>{const d=fx?.data?.[c]||{};o[c]={stance:d.stance?.value,rate:d.rate?.value,gdp:d.gdp?.value,unemp:d.unemp?.value}});return o},[fx]);
   const A=useMemo(()=>analytics(hist),[hist]),sc=useMemo(()=>scores(fund,A),[fund,A]);
   const send=o=>{setPre({...o,n:Date.now()});setTab(5)};
   const dot=conn==='LIVE'?C.up:conn.startsWith('OFF')?C.dn:'#f59e0b';
   const status=<Row style={{justifyContent:'flex-start'}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dot,marginRight:6}}/><T c={C.mut} s={11}>{conn}</T></Row>;
-  const body=<ScrollView style={{flex:1}} contentContainerStyle={{padding:wide?24:12,maxWidth:1100,width:'100%',alignSelf:'center'}} keyboardShouldPersistTaps='handled' refreshControl={<RefreshControl refreshing={busy} onRefresh={refresh} tintColor={C.ac} colors={[C.ac]}/>}>
+  const body=<ScrollView style={{flex:1}} contentContainerStyle={{padding:wide?24:12,maxWidth:1100,width:'100%',alignSelf:'center'}} keyboardShouldPersistTaps='handled' refreshControl={<RefreshControl refreshing={busy} onRefresh={()=>refresh(true)} tintColor={C.ac} colors={[C.ac]}/>}>
     {(tab===0||tab===4)&&<NextHigh cal={cal}/>}
-    {tab===0&&<Overview A={A} sc={sc} fund={fund}/>}{tab===1&&<Fundamentals fx={fx} sc={sc}/>}{tab===2&&<Scanner A={A} sc={sc} fx={fx} cot={cot} send={send}/>}{tab===3&&<Macro d={dash}/>}{tab===4&&<News news={news} trades={trades}/>}{tab===5&&<Risk pre={pre}/>}{tab===6&&<Journal trades={trades} setTrades={setTrades}/>}{tab===7&&<EconCalendar cal={cal} fx={fx}/>}</ScrollView>;
+    {tab===0&&<Overview A={A} sc={sc} fund={fund}/>}{tab===1&&<Fundamentals fx={fx} sc={sc}/>}{tab===2&&<Scanner A={A} sc={sc} fx={fx} cot={cot} send={send}/>}{tab===3&&<Macro d={dash}/>}{tab===4&&<News news={news} trades={trades} nf={nf} setNf={setNf}/>}{tab===5&&<Risk pre={pre}/>}{tab===6&&<Journal trades={trades} setTrades={setTrades}/>}{tab===7&&<EconCalendar cal={cal}/>}{tab===8&&<Picks A={A} sc={sc} fx={fx} cal={cal} news={news}/>}</ScrollView>;
   const warn=<T c='#f59e0b' s={10} style={{paddingHorizontal:wide?24:14,paddingVertical:6}}>ECB data = daily reference rates, not live quotes · Scores are research aids, not trade signals.</T>;
   if(wide)return<View style={{flex:1,flexDirection:'row',backgroundColor:C.bg}}>
     <View style={{width:250,backgroundColor:'#070d20',borderRightWidth:1,borderRightColor:C.line,padding:14}}>
       <T s={16} w='800' style={{marginBottom:18}}>FX Fundamentals <T c={C.ac}>Pro</T></T>
       {NAV.map(([sec,items])=><View key={sec} style={{marginBottom:14}}><T c={C.mut} s={11} w='700' style={{marginBottom:6}}>{sec}</T>{items.map(([i,l,g])=><TouchableOpacity key={i} onPress={()=>setTab(i)} style={{flexDirection:'row',padding:10,borderRadius:8,backgroundColor:tab===i?C.card:'transparent'}}><T c={tab===i?C.ac:C.mut} style={{width:24}}>{g}</T><T c={tab===i?C.tx:C.mut} w={tab===i?'700':'400'}>{l}</T></TouchableOpacity>)}</View>)}
       <View style={{flex:1}}/>{status}</View>
-    <View style={{flex:1}}><SessionBar/><Row style={{borderBottomWidth:1,borderBottomColor:C.line,paddingRight:24}}>{warn}<Btn t={busy?'Refreshing…':'Refresh'} on={refresh} style={{paddingVertical:6}}/></Row>{body}</View></View>;
+    <View style={{flex:1}}><SessionBar/><Row style={{borderBottomWidth:1,borderBottomColor:C.line,paddingRight:24}}>{warn}<Btn t={busy?'Refreshing…':'Refresh'} on={()=>refresh(true)} style={{paddingVertical:6}}/></Row>{body}</View></View>;
   return<View style={{flex:1,backgroundColor:C.bg,paddingTop:Platform.OS==='android'?(StatusBar.currentHeight||24):8}}>
     <StatusBar barStyle='light-content' backgroundColor={C.bg}/>
     <Row style={{paddingHorizontal:14,paddingBottom:4}}><T s={18} w='800'>FX Fundamentals <T c={C.ac}>Pro</T></T>{status}</Row><SessionBar/>{warn}{body}
-    <Row style={{backgroundColor:C.card,borderTopWidth:1,borderTopColor:C.line,paddingBottom:10}}>{TABS.map(([t,i])=><TouchableOpacity key={t} onPress={()=>setTab(i)} style={{flex:1,alignItems:'center',paddingVertical:12}}><T s={9} w='700' c={tab===i?C.ac:C.mut}>{t}</T></TouchableOpacity>)}</Row></View>;
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{flexGrow:0,backgroundColor:C.card,borderTopWidth:1,borderTopColor:C.line}} contentContainerStyle={{paddingBottom:10}}>{TABS.map(([t,i])=><TouchableOpacity key={t} onPress={()=>setTab(i)} style={{paddingHorizontal:15,paddingVertical:12}}><T s={11} w='700' c={tab===i?C.ac:C.mut}>{t}</T></TouchableOpacity>)}</ScrollView></View>;
 }
