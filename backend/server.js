@@ -311,14 +311,21 @@ async function fundamentals(){
 setTimeout(()=>cached('f',18e5,fundamentals).catch(()=>{}),4000);
 setInterval(()=>cached('f',0,fundamentals,true).catch(()=>{}),18e5);
 
-// ---- Economic calendar (v11: Forex Factory schedule + live actuals merged from TradingView / FXStreet / TradingEconomics)
+// ---- Economic calendar (Forex Factory 1-to-1 schedule + live actuals merged from TradingView & FXStreet)
 const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json'];
 const CAL_NEXT=['https://nfs.faireconomy.media/ff_calendar_nextweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_nextweek.json'];
 const MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
 const TV_CUR={US:'USD',EU:'EUR',DE:'EUR',FR:'EUR',IT:'EUR',ES:'EUR',GB:'GBP',JP:'JPY',CH:'CHF',CA:'CAD',AU:'AUD',NZ:'NZD'};
-const TE_CUR={'united states':'USD','euro area':'EUR','germany':'EUR','france':'EUR','italy':'EUR','spain':'EUR','united kingdom':'GBP','japan':'JPY','switzerland':'CHF','canada':'CAD','australia':'AUD','new zealand':'NZD'};
+const IST_OFF=5.5*36e5;
 
 async function firstJson(urls){let e;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2))}catch(x){e=x}}throw e}
+
+function parseCalNum(s){
+  if(s==null||s==='')return NaN;
+  const m=String(s).trim().replace(/[€£¥$,]/g,'').match(/^([+-]?[\d.]+)\s*([KMBT%]?)/i);
+  if(!m)return NaN;
+  return parseFloat(m[1])*({K:1e3,M:1e6,B:1e9,T:1e12}[m[2].toUpperCase()]||1);
+}
 
 function fmtCalVal(v,unit,scale){
   if(v==null||v==='')return null;
@@ -341,7 +348,16 @@ function fmtCalVal(v,unit,scale){
 function alignUnit(val,ref){
   if(!val)return null;
   const s=String(val).trim();
-  if(/^[+-]?[\d.]+$/.test(s)&&ref&&String(ref).trim().endsWith('%'))return s+'%';
+  if(!ref)return s;
+  const r=String(ref).trim();
+  if(/^[+-]?[\d.]+$/.test(s)){
+    const n=parseFloat(s);
+    if(r.endsWith('%'))return s+'%';
+    if(r.endsWith('K'))return Math.abs(n)>=1000?`${+(n/1e3).toFixed(1)}K`:`${s}K`;
+    if(r.endsWith('M'))return Math.abs(n)>=1e6?`${+(n/1e6).toFixed(2)}M`:`${s}M`;
+    if(r.endsWith('B'))return Math.abs(n)>=1e9?`${+(n/1e9).toFixed(2)}B`:`${s}B`;
+    if(r.endsWith('T'))return Math.abs(n)>=1e12?`${+(n/1e12).toFixed(2)}T`:`${s}T`;
+  }
   return s;
 }
 
@@ -397,32 +413,7 @@ async function fxsCalendar(fromIso,toIso){
   }).filter(Boolean);
 }
 
-async function teCalendar(){
-  const j=JSON.parse(await getText('https://api.tradingeconomics.com/calendar?c=guest:guest&f=json',{headers:{'User-Agent':UA,Accept:'application/json'}},1));
-  if(!Array.isArray(j))return[];
-  return j.map(e=>{
-    const cName=String(e.Country||'').toLowerCase();
-    const cur=MAJ.includes(e.Currency)?e.Currency:TE_CUR[cName];
-    if(!cur||!e.Date)return null;
-    const d=new Date(e.Date+(String(e.Date).endsWith('Z')?'':'Z'));if(isNaN(d))return null;
-    const imp=e.Importance>=3?'High':e.Importance===2?'Medium':'Low';
-    const geo=cName==='germany'?'DE':cName==='france'?'FR':cName==='italy'?'IT':cName==='spain'?'ES':null;
-    return{
-      title:String(e.Event||e.Category||'').trim(),
-      currency:cur,
-      geo,
-      impact:imp,
-      timestamp:d.toISOString(),
-      actual:e.Actual!=null&&String(e.Actual).trim()!==''?String(e.Actual).trim():null,
-      forecast:e.Forecast!=null&&String(e.Forecast).trim()!==''?String(e.Forecast).trim():(e.TEForecast!=null&&String(e.TEForecast).trim()!==''?String(e.TEForecast).trim():null),
-      previous:e.Previous!=null&&String(e.Previous).trim()!==''?String(e.Previous).trim():null,
-      detail:null,
-      src:'TradingEconomics'
-    };
-  }).filter(Boolean);
-}
-
-const CAL_STOP=new Set(['the','of','in','for','and','to','us','u','s','uk','eu','ez','au','nz','jp','ca','ch','australia','australian','united','states','euro','area','eurozone','german','germany','french','france','italian','italy','spanish','spain','british','japan','japanese','swiss','switzerland','canada','canadian','new','zealand','monthly','quarterly','annual','yearly','indicator','index','rate','price','prices','change','growth','figure','data','report','release','preliminary','prelim','advance','flash','final','revised','est','estimate','1st','2nd','3rd','s','a','sa','nsa']);
+const CAL_STOP=new Set(['the','of','in','for','and','to','us','u','s','uk','eu','ez','au','nz','jp','ca','ch','australia','australian','united','states','euro','area','eurozone','german','germany','french','france','italian','italy','spanish','spain','british','japan','japanese','swiss','switzerland','canada','canadian','new','zealand','monthly','quarterly','annual','yearly','indicator','index','rate','price','prices','change','growth','figure','data','report','release','preliminary','prelim','advance','flash','final','revised','est','estimate','1st','2nd','3rd','s','a','sa','nsa','rba','fed','ecb','boe','boj','boc','snb','rbnz']);
 
 function sigCal(title,geoHint){
   const t=String(title||'').toLowerCase();
@@ -441,7 +432,7 @@ function sigCal(title,geoHint){
   };
   let fam=null;
   if(/\bgdp\b.*(price|deflator)/i.test(t))fam='gdp_price';
-  else if(/\bpce\b/i.test(t))fam='pce';
+  else if(/\bpce\b|personal consumption expenditures/i.test(t))fam='pce';
   else if(/\bcpi\b|\bhicp\b|consumer price|inflation/i.test(t))fam='cpi';
   else if(/\bgdp\b|gross domestic/i.test(t))fam='gdp';
   else if(/\bppi\b|producer price/i.test(t))fam='ppi';
@@ -458,7 +449,7 @@ function sigCal(title,geoHint){
   else if(/current account/i.test(t))fam='curr_acct';
   else if(/durable goods/i.test(t))fam='durable';
   else if(/crude oil inventories/i.test(t))fam='oil_inv';
-  else if(/interest rate|cash rate|bank rate|policy rate|rate decision|federal funds|official cash/i.test(t))fam='rate';
+  else if(/interest rate|cash rate|bank rate|policy rate|rate decision|federal funds|official cash|overnight rate|main refinancing/i.test(t))fam='rate';
   else if(/consumer confidence|consumer sentiment|michigan/i.test(t))fam='conf';
   else if(/\bifo\b/i.test(t))fam='ifo';
   else if(/\bzew\b/i.test(t))fam='zew';
@@ -478,13 +469,24 @@ function sigCal(title,geoHint){
   return{period,geo,flags,fam,toks};
 }
 
-function matchLiveEvent(ev,pool){
+function sameReleaseDay(t1,t2){
+  const dt=Math.abs(t1-t2);
+  if(dt<=6*36e5)return true;
+  if(dt>24*36e5)return false;
+  const u1=new Date(t1).toISOString().slice(0,10),u2=new Date(t2).toISOString().slice(0,10);
+  const i1=new Date(t1+IST_OFF).toISOString().slice(0,10),i2=new Date(t2+IST_OFF).toISOString().slice(0,10);
+  return u1===u2||i1===i2;
+}
+
+function matchLiveEvent(ev,pool,requireActual=false){
   const ts=new Date(ev.timestamp).getTime(),s1=sigCal(ev.title,null);
+  const evFcst=parseCalNum(ev.forecast),evPrev=parseCalNum(ev.previous);
   let best=null,bestScore=0;
   for(const cand of pool){
+    if(requireActual&&!cand.actual)continue;
     if(cand.currency!==ev.currency)continue;
-    const dt=Math.abs(new Date(cand.timestamp).getTime()-ts);
-    if(dt>26*36e5)continue;
+    const cts=new Date(cand.timestamp).getTime();
+    if(!sameReleaseDay(ts,cts))continue;
     const s2=cand._sig||(cand._sig=sigCal(cand.title,cand.geo));
 
     // Strict qualifier guards to prevent cross-matching sibling releases
@@ -506,10 +508,18 @@ function matchLiveEvent(ev,pool){
 
     const union=s1.toks.size+s2.toks.size-inter||1;
     let score=(inter/union)*5+(sameFam?4:0)+(s1.period&&s1.period===s2.period?2.5:0)+(s1.geo&&s1.geo===s2.geo?1.5:0);
-    if(dt<=9e5)score+=4;
-    else if(dt<=72e5)score+=2;
-    else if(dt<=14*36e5)score+=0.5;
-    if(cand.actual!=null)score+=1.2;
+
+    const dt=Math.abs(cts-ts);
+    if(dt<=5*6e4)score+=5;
+    else if(dt<=65*6e4)score+=3;
+    else if(dt<=6*36e5)score+=1;
+
+    // Forecast & Previous numeric alignment tie-breaker for simultaneous releases
+    const cFcst=parseCalNum(cand.forecast),cPrev=parseCalNum(cand.previous);
+    if(!isNaN(evFcst)&&!isNaN(cFcst)&&Math.abs(evFcst-cFcst)<1e-6)score+=3;
+    if(!isNaN(evPrev)&&!isNaN(cPrev)&&Math.abs(evPrev-cPrev)<1e-6)score+=2;
+
+    if(cand.actual!=null)score+=1;
     if(cand.src==='TradingView')score+=0.3;
 
     if(score>bestScore){bestScore=score;best=cand}
@@ -522,23 +532,20 @@ async function calendar(){
   const fromIso=new Date(now-8*864e5).toISOString();
   const toIso=new Date(now+15*864e5).toISOString();
 
-  const[ffThis,ffNext,tvRes,fxsRes,teRes]=await Promise.allSettled([
+  const[ffThis,ffNext,tvRes,fxsRes]=await Promise.allSettled([
     firstJson(CAL_THIS),
     firstJson(CAL_NEXT),
     tvCalendar(fromIso,toIso),
-    fxsCalendar(fromIso,toIso),
-    teCalendar()
+    fxsCalendar(fromIso,toIso)
   ]);
 
   const livePool=[
     ...(tvRes.status==='fulfilled'?tvRes.value:[]),
-    ...(fxsRes.status==='fulfilled'?fxsRes.value:[]),
-    ...(teRes.status==='fulfilled'?teRes.value:[])
+    ...(fxsRes.status==='fulfilled'?fxsRes.value:[])
   ];
   const liveSources=[
     tvRes.status==='fulfilled'&&tvRes.value.length?'TradingView':null,
-    fxsRes.status==='fulfilled'&&fxsRes.value.length?'FXStreet':null,
-    teRes.status==='fulfilled'&&teRes.value.length?'TradingEconomics':null
+    fxsRes.status==='fulfilled'&&fxsRes.value.length?'FXStreet':null
   ].filter(Boolean);
 
   const ffRaw=[
@@ -548,6 +555,7 @@ async function calendar(){
 
   let items=[];
   if(ffRaw.length){
+    // Primary 1-to-1 Forex Factory schedule (no extra non-FF events appended)
     items=ffRaw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>{
       const ts=(d=>isNaN(d)?null:d.toISOString())(new Date(e.date));
       if(!ts)return null;
@@ -564,45 +572,24 @@ async function calendar(){
       };
     }).filter(Boolean);
 
-    // Merge live actuals & indicator descriptions onto every FF row
+    // Enrich each Forex Factory row with released actuals (and detail notes) from TradingView / FXStreet
     for(const ev of items){
-      const match=matchLiveEvent(ev,livePool);
-      if(!match)continue;
-      const isPast=new Date(ev.timestamp).getTime()<=now+3e5;
-      if(!ev.actual&&match.actual&&isPast){
-        ev.actual=alignUnit(match.actual,ev.forecast||ev.previous);
-        ev.actualSource=match.src;
+      const isPast=new Date(ev.timestamp).getTime()<=now+5*6e4;
+      if(!ev.actual&&isPast){
+        const actMatch=matchLiveEvent(ev,livePool,true);
+        if(actMatch&&actMatch.actual){
+          ev.actual=alignUnit(actMatch.actual,ev.forecast||ev.previous);
+          ev.actualSource=actMatch.src;
+          if(actMatch.detail)ev.detail=actMatch.detail;
+        }
       }
-      if(!ev.forecast&&match.forecast)ev.forecast=alignUnit(match.forecast,ev.previous);
-      if(!ev.previous&&match.previous)ev.previous=alignUnit(match.previous,ev.forecast);
-      if(!ev.detail&&match.detail)ev.detail=match.detail;
+      if(!ev.detail){
+        const detMatch=matchLiveEvent(ev,livePool,false);
+        if(detMatch?.detail)ev.detail=detMatch.detail;
+      }
     }
-
-    // Backfill prior-week released events before FF's earliest date so Yesterday & Past Releases stay populated
-    const minFF=items.reduce((m,e)=>Math.min(m,new Date(e.timestamp).getTime()),Infinity);
-    const seenPast=new Set();
-    const pastBackfill=livePool.filter(e=>{
-      const t=new Date(e.timestamp).getTime();
-      if(t>=minFF||t>now)return false;
-      const s=sigCal(e.title,e.geo);
-      const k=`${e.currency}_${e.timestamp.slice(0,13)}_${s.fam||e.title.toLowerCase().slice(0,18)}_${s.period||''}_${s.flags.core?'c':''}${s.flags.trimmed?'t':''}`;
-      if(seenPast.has(k))return false;
-      seenPast.add(k);
-      return true;
-    }).map(e=>({
-      title:e.title,
-      currency:e.currency,
-      impact:e.impact,
-      timestamp:e.timestamp,
-      forecast:e.forecast,
-      previous:e.previous,
-      actual:e.actual,
-      actualSource:e.actual?e.src:null,
-      detail:e.detail
-    }));
-    items=[...pastBackfill,...items];
   } else if(livePool.length){
-    // Standalone fallback if Forex Factory feed is unreachable
+    // Fallback only if Forex Factory JSON feed fails or returns empty
     const seen=new Set();
     items=livePool.filter(e=>{
       const k=`${e.currency}_${e.timestamp.slice(0,16)}_${e.title.toLowerCase().slice(0,24)}`;
