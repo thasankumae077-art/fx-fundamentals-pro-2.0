@@ -256,8 +256,8 @@ function Journal({trades,setTrades}){
 
 // ---------- time / sessions (IST)
 // ==SESS-START
-const IST=5.5*36e5,p2=n=>String(n).padStart(2,'0');
-const ist=t=>{const d=new Date(t+IST);return{h:d.getUTCHours(),m:d.getUTCMinutes(),s:d.getUTCSeconds(),wd:d.getUTCDay(),day:d.getUTCDate(),mon:d.getUTCMonth(),md:d.getUTCHours()*60+d.getUTCMinutes()}};
+const IST=5.5*36e5,DAY_MS=864e5,p2=n=>String(n).padStart(2,'0');
+const ist=t=>{const d=new Date(t+IST);return{h:d.getUTCHours(),m:d.getUTCMinutes(),s:d.getUTCSeconds(),wd:d.getUTCDay(),day:d.getUTCDate(),mon:d.getUTCMonth(),y:d.getUTCFullYear(),md:d.getUTCHours()*60+d.getUTCMinutes()}};
 const SESS=[['Tokyo',330,870],['London',810,1350],['New York',1110,210]];
 const inR=(m,s,e)=>s<e?m>=s&&m<e:m>=s||m<e;
 const closedWk=i=>(i.wd===6&&i.md>=210)||i.wd===0||(i.wd===1&&i.md<210);
@@ -280,26 +280,233 @@ function NextHigh({cal}){
   const nx=(cal.items||[]).filter(e=>e.impact==='High'&&new Date(e.timestamp)>now)[0];
   return<View style={{backgroundColor:'#3b0d0d',borderWidth:1,borderColor:'#7f1d1d',borderRadius:10,padding:10,marginBottom:12}}>
     {nx?<T s={13} w='700'>🔴 Next High-Impact: {nx.currency} {nx.title} in {fmtCd(new Date(nx.timestamp)-now)} <T c='#fecaca' w='400' s={12}>· Forecast {nx.forecast||'–'} vs Prev {nx.previous||'–'}</T></T>:<T c={C.mut} s={13}>No further high-impact releases on this week's calendar.</T>}</View>}
+
+// ---------- Economic Calendar (v11 Forex Factory style + live Actuals)
 const MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'],WD=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],MN=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const num=s=>{if(s==null||s==='')return NaN;const m=String(s).trim().match(/^(-?[\d.,]+)\s*([KMBT%]?)/i);if(!m)return NaN;return parseFloat(m[1].replace(/,/g,''))*({K:1e3,M:1e6,B:1e9,T:1e12}[m[2].toUpperCase()]||1)};
-const verdict=e=>{const a=num(e.actual),f=num(e.forecast);if(isNaN(a)||isNaN(f)||a===f)return 0;return((a>f)!==/unemployment|jobless|claims|deficit/i.test(e.title))?1:-1};
+const INV_RX=/unemployment|jobless|claims|deficit|insolvenc|bankruptc|layoff/i;
+const num=s=>{if(s==null||s==='')return NaN;const cleaned=String(s).trim().replace(/[€£¥$,]/g,'');const m=cleaned.match(/^([+-]?[\d.]+)\s*([KMBT%]?)/i);if(!m)return NaN;return parseFloat(m[1])*({K:1e3,M:1e6,B:1e9,T:1e12}[m[2].toUpperCase()]||1)};
+const verdict=e=>{const a=num(e.actual),f=num(e.forecast);if(isNaN(a)||isNaN(f)||a===f)return 0;return((a>f)!==INV_RX.test(e.title))?1:-1};
+const istMid=t=>{const d=ist(t);return Date.UTC(d.y,d.mon,d.day)-IST};
+const istDayId=t=>{const d=ist(t);return`${d.y}-${p2(d.mon+1)}-${p2(d.day)}`};
+const sunStart=t=>{const m0=istMid(t),d=ist(m0);return m0-d.wd*DAY_MS};
+
+const CAL_GLOSSARY=[
+  [/\bcpi\b|consumer price|hicp|inflation/i,'Measures the change in prices paid by consumers for a basket of goods and services.','Consumer prices drive central bank rate decisions; sticky or hot inflation forces tighter monetary policy.'],
+  [/\bpce\b/i,'Measures the change in prices of goods and services purchased by consumers, excluding volatile food and energy when Core.','This is the Federal Reserve\'s preferred inflation gauge for setting interest rates.'],
+  [/\bgdp\b|gross domestic/i,'Measures the annualized or quarterly change in inflation-adjusted value of all goods and services produced by the economy.','Broadest measure of economic activity and the primary gauge of economic health and expansion.'],
+  [/non-?farm|\bnfp\b|employment change|payrolls/i,'Measures the change in the number of employed people during the previous month.','Job creation is a leading indicator of consumer spending, wage pressure, and overall economic momentum.'],
+  [/unemployment|jobless|claims/i,'Measures the percentage of the labor force unemployed or individuals filing for unemployment insurance.','Rising joblessness signals labor-market slack and increases pressure on the central bank to cut rates.'],
+  [/\bppi\b|producer price/i,'Measures the change in prices of finished goods and services sold by producers.','A leading indicator of consumer inflation because higher producer costs are often passed on to consumers.'],
+  [/\bpmi\b|\bism\b|purchasing managers/i,'Diffusion index based on surveyed purchasing managers in manufacturing or services (above 50 = expansion, below 50 = contraction).','Leading indicator of economic health as businesses react quickly to demand and supply shifts.'],
+  [/retail sales/i,'Measures the change in the total value of sales at the retail level.','Primary gauge of consumer spending, which accounts for the majority of overall economic activity.'],
+  [/rate decision|cash rate|bank rate|policy rate|federal funds|official cash|monetary policy|fomc|mpc|ecb press/i,'Central bank announcement on short-term benchmark interest rates and forward monetary policy guidance.','Short-term interest rates are the single most important factor in currency valuation and yield differentials.'],
+  [/trade balance|current account/i,'Measures the difference in value between imported and exported goods and services.','Export demand directly creates demand for the domestic currency from foreign buyers.'],
+  [/confidence|sentiment|\bzew\b|\bifo\b|michigan/i,'Survey of consumer or business optimism regarding current and future economic conditions.','Confidence is a leading indicator of spending, hiring, and capital investment.'],
+  [/housing|building permits|home sales|starts/i,'Measures activity and demand in the residential construction and real estate sector.','Housing is highly rate-sensitive and produces a broad ripple effect across jobs and retail spending.'],
+  [/durable goods|factory orders|industrial production/i,'Measures change in value of orders or output from manufacturers and utilities.','Signals upstream business investment and upcoming production momentum.'],
+  [/minutes|speech|speaks|testifies|press conference/i,'Public remarks or meeting minutes from central bank officials discussing inflation, growth, and future rate paths.','Traders scrutinize wording for hawkish or dovish clues on the timing of upcoming rate hikes or cuts.'],
+  [/oil inventories|crude oil|eia/i,'Weekly change in the number of barrels of commercial crude oil held in inventory by US firms.','Directly impacts crude oil prices and energy-linked currencies such as CAD.']
+];
+
+function eventDetailInfo(e){
+  const inv=INV_RX.test(e.title);
+  const hit=CAL_GLOSSARY.find(([rx])=>rx.test(e.title));
+  const desc=e.detail||hit?.[1]||`Scheduled ${e.currency} macroeconomic release tracking domestic economic conditions.`;
+  const why=hit?.[2]||`Releases that surprise market expectations shift ${e.currency} interest-rate pricing and capital flows.`;
+  const usual=inv?`'Actual' lower than 'Forecast' is typically bullish for ${e.currency}; higher than forecast is bearish.`:`'Actual' greater than 'Forecast' is typically bullish for ${e.currency}; lower than forecast is bearish.`;
+  return{desc,why,usual};
+}
+
+function ImpactFolder({impact}){
+  const colMap={High:'#dc2626',Medium:'#f97316',Low:'#eab308'};
+  const bg=colMap[impact]||'#64748b';
+  return<View style={{width:20,height:16,justifyContent:'flex-end',alignItems:'flex-start'}}>
+    <View style={{width:9,height:4,backgroundColor:bg,borderTopLeftRadius:2,borderTopRightRadius:2,marginLeft:1}}/>
+    <View style={{width:20,height:12,backgroundColor:bg,borderRadius:2,borderTopLeftRadius:0}}/>
+  </View>;
+}
+
+const CAL_TABS=[['Today','Today'],['Tomorrow','Tomorrow'],['This Week','This Week'],['Next Week','Next Week'],['Yesterday','Yesterday'],['Past Releases','Past Releases']];
+
 function EconCalendar({cal}){
-  const [cur,setCur]=useState('ALL'),[imp,setImp]=useState('ALL'),now=useNow();
+  const {width}=useWindowDimensions(),wide=width>=900;
+  const [cur,setCur]=useState('ALL');
+  const [imp,setImp]=useState('ALL');
+  const [rangeTab,setRangeTab]=useState('This Week');
+  const [weekOffset,setWeekOffset]=useState(0);
+  const [openKey,setOpenKey]=useState(null);
+  const now=useNow();
+
   if(!cal)return<Wait/>;
-  const L=(cal.items||[]).filter(e=>(cur==='ALL'||e.currency===cur)&&(imp==='ALL'||e.impact===imp)),days={};
-  L.forEach(e=>{const d=ist(new Date(e.timestamp).getTime()),k=`${WD[d.wd]} ${d.day} ${MN[d.mon]}`;(days[k]??=[]).push(e)});
-  const dc={High:C.dn,Medium:'#f59e0b',Low:C.mut};
-  return<><T s={24} w='800'>Economic calendar</T><Note>All times in IST (Asia/Kolkata). {cal.source} Actual is green if better than forecast, red if worse (for unemployment, claims and deficits lower is better).{cal.stale?' Showing stale cache.':''}</Note>
+
+  const today0=istMid(now);
+  const baseSun=sunStart(now);
+  const activeSun=baseSun+weekOffset*7*DAY_MS;
+  const activeSat=activeSun+6*DAY_MS;
+  const fmtShort=t=>{const d=ist(t);return`${MN[d.mon]} ${d.day}`};
+
+  const selectTab=tab=>{
+    setRangeTab(tab);
+    setOpenKey(null);
+    if(tab==='This Week')setWeekOffset(0);
+    else if(tab==='Next Week')setWeekOffset(1);
+    else if(tab==='Today')setWeekOffset(0);
+    else if(tab==='Tomorrow')setWeekOffset(istMid(today0+DAY_MS)>=baseSun+7*DAY_MS?1:0);
+    else if(tab==='Yesterday')setWeekOffset(istMid(today0-DAY_MS)<baseSun?-1:0);
+  };
+
+  const shiftWeek=delta=>{
+    const next=weekOffset+delta;
+    setWeekOffset(next);
+    setOpenKey(null);
+    setRangeTab(next===0?'This Week':next===1?'Next Week':'Custom Week');
+  };
+
+  const navLabel=()=>{
+    if(rangeTab==='Today')return`Today: ${WD[ist(today0).wd]} ${fmtShort(today0)}`;
+    if(rangeTab==='Tomorrow'){const t1=today0+DAY_MS;return`Tomorrow: ${WD[ist(t1).wd]} ${fmtShort(t1)}`}
+    if(rangeTab==='Yesterday'){const tm1=today0-DAY_MS;return`Yesterday: ${WD[ist(tm1).wd]} ${fmtShort(tm1)}`}
+    if(rangeTab==='Past Releases')return`Past Releases (Released Actuals)`;
+    const prefix=weekOffset===0?'This Week':weekOffset===1?'Next Week':weekOffset===-1?'Last Week':'Week';
+    return`${prefix}: ${fmtShort(activeSun)} – ${fmtShort(activeSat)}`;
+  };
+
+  const filtered=(cal.items||[]).filter(e=>{
+    if(cur!=='ALL'&&e.currency!==cur)return false;
+    if(imp!=='ALL'&&e.impact!==imp)return false;
+    const ts=new Date(e.timestamp).getTime();
+    if(rangeTab==='Today')return ts>=today0&&ts<today0+DAY_MS;
+    if(rangeTab==='Tomorrow')return ts>=today0+DAY_MS&&ts<today0+2*DAY_MS;
+    if(rangeTab==='Yesterday')return ts>=today0-DAY_MS&&ts<today0;
+    if(rangeTab==='Past Releases')return ts<now;
+    return ts>=activeSun&&ts<activeSun+7*DAY_MS;
+  });
+
+  const byDay={};
+  filtered.forEach(e=>{
+    const k=istDayId(new Date(e.timestamp).getTime());
+    (byDay[k]??=[]).push(e);
+  });
+
+  let dayList=[];
+  if(rangeTab==='This Week'||rangeTab==='Next Week'||rangeTab==='Custom Week'){
+    for(let i=0;i<7;i++){
+      const tDay=activeSun+i*DAY_MS,d=ist(tDay),k=istDayId(tDay);
+      dayList.push({key:k,label:`${WD[d.wd]} ${MN[d.mon]} ${d.day}`,isToday:k===istDayId(now),events:(byDay[k]||[]).sort((a,b)=>a.timestamp.localeCompare(b.timestamp))});
+    }
+  }else if(rangeTab==='Today'||rangeTab==='Tomorrow'||rangeTab==='Yesterday'){
+    const tDay=rangeTab==='Today'?today0:rangeTab==='Tomorrow'?today0+DAY_MS:today0-DAY_MS;
+    const d=ist(tDay),k=istDayId(tDay);
+    dayList.push({key:k,label:`${WD[d.wd]} ${MN[d.mon]} ${d.day}`,isToday:k===istDayId(now),events:(byDay[k]||[]).sort((a,b)=>a.timestamp.localeCompare(b.timestamp))});
+  }else{
+    dayList=Object.keys(byDay).sort((a,b)=>b.localeCompare(a)).map(k=>{
+      const evs=byDay[k].sort((a,b)=>b.timestamp.localeCompare(a.timestamp));
+      const d=ist(new Date(evs[0].timestamp).getTime());
+      return{key:k,label:`${WD[d.wd]} ${MN[d.mon]} ${d.day}`,isToday:k===istDayId(now),events:evs};
+    });
+  }
+
+  const W={date:86,time:56,cur:44,imp:40,det:42,act:74,fcst:72,prev:72};
+  const tableMinW=wide?'100%':760;
+
+  const TableHeader=()=><View style={{flexDirection:'row',alignItems:'center',backgroundColor:'#0d1636',paddingVertical:8,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:C.line}}>
+    <T c={C.mut} s={10} w='800' style={{width:W.date}}>DATE</T>
+    <T c={C.mut} s={10} w='800' style={{width:W.time}}>TIME</T>
+    <T c={C.mut} s={10} w='800' style={{width:W.cur,textAlign:'center'}}>CUR</T>
+    <T c={C.mut} s={10} w='800' style={{width:W.imp,textAlign:'center'}}>IMP</T>
+    <T c={C.mut} s={10} w='800' style={{flex:1,paddingHorizontal:6}}>EVENT</T>
+    <T c={C.mut} s={10} w='800' style={{width:W.det,textAlign:'center'}}>DET</T>
+    <T c={C.mut} s={10} w='800' style={{width:W.act,textAlign:'right'}}>ACTUAL</T>
+    <T c={C.mut} s={10} w='800' style={{width:W.fcst,textAlign:'right'}}>FCST</T>
+    <T c={C.mut} s={10} w='800' style={{width:W.prev,textAlign:'right'}}>PREV</T>
+  </View>;
+
+  return<>
+    <T s={24} w='800'>Economic calendar</T>
+    <Note>All times in IST (Asia/Kolkata). {cal.source} Actuals auto-update every 2 min (Green = better than forecast, Red = worse; inverted for unemployment, claims & deficits).{cal.stale?' Showing stale cache.':''}</Note>
+
+    <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',backgroundColor:C.card,borderWidth:1,borderColor:C.line,borderRadius:10,paddingVertical:8,paddingHorizontal:10,marginBottom:10}}>
+      <TouchableOpacity onPress={()=>shiftWeek(-1)} style={{paddingHorizontal:12,paddingVertical:6,backgroundColor:C.bg,borderRadius:8,borderWidth:1,borderColor:C.line}}>
+        <T s={14} w='800'>‹</T>
+      </TouchableOpacity>
+      <View style={{alignItems:'center',flex:1,paddingHorizontal:8}}>
+        <T s={14} w='800'>{navLabel()}</T>
+        <T c={C.mut} s={10}>{filtered.length} event{filtered.length===1?'':'s'} shown{cal.actualsCount?` · ${cal.actualsCount} live actuals synced`:''}</T>
+      </View>
+      <TouchableOpacity onPress={()=>shiftWeek(1)} style={{paddingHorizontal:12,paddingVertical:6,backgroundColor:C.bg,borderRadius:8,borderWidth:1,borderColor:C.line}}>
+        <T s={14} w='800'>›</T>
+      </TouchableOpacity>
+    </View>
+
+    <Pills opts={CAL_TABS} val={rangeTab} set={selectTab}/>
     <Pills opts={[['ALL','All'],...MAJ.map(c=>[c,c])]} val={cur} set={setCur}/>
-    <Pills opts={[['ALL','All'],['High','🔴 High Impact'],['Medium','🟠 Medium Impact']]} val={imp} set={setImp}/>
-    {!L.length&&<Card><T c={C.mut}>No events match these filters.</T></Card>}
-    {Object.entries(days).map(([day,ev])=><Card key={day} title={day}>
-      <Row style={{paddingBottom:4}}><T c={C.mut} s={10} style={{width:48}}>IST</T><T c={C.mut} s={10} style={{flex:1}}>EVENT</T><View style={{width:156,flexDirection:'row'}}>{['ACTUAL','FCST','PREV'].map(h=><T key={h} c={C.mut} s={10} style={{flex:1,textAlign:'right'}}>{h}</T>)}</View></Row>
-      {ev.map((e,i)=>{const d=ist(new Date(e.timestamp).getTime()),past=new Date(e.timestamp)<now,v=verdict(e);
-        return<Row key={i} style={{alignItems:'flex-start',paddingVertical:9,borderTopWidth:1,borderTopColor:C.line,opacity:past?.7:1}}>
-          <T s={13} w='700' style={{width:48}}>{p2(d.h)}:{p2(d.m)}</T>
-          <View style={{flex:1,paddingRight:6}}><Row style={{justifyContent:'flex-start'}}><View style={{width:8,height:8,borderRadius:4,backgroundColor:dc[e.impact],marginRight:6}}/><T c={C.ac} s={12} w='800'>{e.currency}</T></Row><T s={13}>{e.title}</T></View>
-          <View style={{width:156,flexDirection:'row'}}><T s={12} w='800' c={v>0?C.up:v<0?C.dn:C.tx} style={{flex:1,textAlign:'right'}}>{e.actual||'—'}</T><T s={12} style={{flex:1,textAlign:'right'}}>{e.forecast||'—'}</T><T s={12} c={C.mut} style={{flex:1,textAlign:'right'}}>{e.previous||'—'}</T></View></Row>})}</Card>)}</>}
+    <Pills opts={[['ALL','All Impact'],['High','🔴 High Impact'],['Medium','🟠 Medium Impact']]} val={imp} set={setImp}/>
+
+    <Card style={{padding:0,overflow:'hidden'}}>
+      <ScrollView horizontal={!wide} showsHorizontalScrollIndicator={!wide}>
+        <View style={{width:tableMinW,minWidth:wide?'100%':760}}>
+          <TableHeader/>
+          {!dayList.length&&<View style={{padding:16}}><T c={C.mut} s={13}>No economic events match these filters.</T></View>}
+          {dayList.map((day,di)=><View key={day.key} style={{borderTopWidth:di===0?0:2,borderTopColor:C.line}}>
+            {day.events.length===0?<View style={{flexDirection:'row',alignItems:'center',paddingVertical:9,paddingHorizontal:8,backgroundColor:day.isToday?'#132046':'transparent'}}>
+              <View style={{width:W.date}}><T s={12} w='800' c={day.isToday?C.ac:C.tx}>{day.label}</T></View>
+              <T c={C.mut} s={12} style={{flex:1,fontStyle:'italic'}}>No scheduled events matching filters</T>
+            </View>:day.events.map((e,idx)=>{
+              const ts=new Date(e.timestamp).getTime(),d=ist(ts),past=ts<now,v=verdict(e);
+              const rKey=`${day.key}_${idx}_${e.currency}_${e.title}`;
+              const isOpen=openKey===rKey;
+              const info=isOpen?eventDetailInfo(e):null;
+              const actColor=e.actual?(v>0?C.up:v<0?C.dn:C.tx):C.mut;
+              return<View key={rKey} style={{borderTopWidth:idx===0?0:1,borderTopColor:C.line,backgroundColor:isOpen?'#16224a':day.isToday&&idx%2===0?'#111d42':idx%2===1?'#0e1733':'transparent'}}>
+                <View style={{flexDirection:'row',alignItems:'center',paddingVertical:8,paddingHorizontal:8,opacity:past&&!e.actual?.75:1}}>
+                  <View style={{width:W.date,paddingRight:4}}>
+                    {idx===0&&<T s={12} w='800' c={day.isToday?C.ac:C.tx}>{day.label}</T>}
+                  </View>
+                  <T s={12} w='700' c={past?C.mut:C.tx} style={{width:W.time}}>{p2(d.h)}:{p2(d.m)}</T>
+                  <View style={{width:W.cur,alignItems:'center'}}>
+                    <View style={{backgroundColor:C.bg,borderWidth:1,borderColor:C.line,borderRadius:4,paddingHorizontal:5,paddingVertical:1}}>
+                      <T s={11} w='800' c={C.ac}>{e.currency}</T>
+                    </View>
+                  </View>
+                  <View style={{width:W.imp,alignItems:'center',justifyContent:'center'}}>
+                    <ImpactFolder impact={e.impact}/>
+                  </View>
+                  <View style={{flex:1,paddingHorizontal:6}}>
+                    <T s={13} w={e.impact==='High'?'700':'400'}>{e.title}</T>
+                  </View>
+                  <TouchableOpacity onPress={()=>setOpenKey(isOpen?null:rKey)} style={{width:W.det,alignItems:'center',justifyContent:'center',paddingVertical:2}}>
+                    <View style={{backgroundColor:isOpen?C.ac:C.bg,borderRadius:6,borderWidth:1,borderColor:isOpen?C.ac:C.line,paddingHorizontal:6,paddingVertical:2}}>
+                      <T s={12}>📄</T>
+                    </View>
+                  </TouchableOpacity>
+                  <T s={13} w='800' c={actColor} style={{width:W.act,textAlign:'right'}}>{e.actual||'—'}</T>
+                  <T s={12} c={C.tx} style={{width:W.fcst,textAlign:'right'}}>{e.forecast||'—'}</T>
+                  <T s={12} c={C.mut} style={{width:W.prev,textAlign:'right'}}>{e.previous||'—'}</T>
+                </View>
+
+                {isOpen&&info&&<View style={{backgroundColor:'#0b132e',borderTopWidth:1,borderTopColor:C.line,paddingHorizontal:14,paddingVertical:10}}>
+                  <Row style={{marginBottom:6}}>
+                    <T s={13} w='800' c={C.ac}>{e.currency} · {e.title}</T>
+                    <TouchableOpacity onPress={()=>setOpenKey(null)}><T c={C.mut} s={12} w='700'>Close ✕</T></TouchableOpacity>
+                  </Row>
+                  <T s={12} style={{marginBottom:5}}><T w='700' c={C.mut}>What it measures: </T>{info.desc}</T>
+                  <T s={12} style={{marginBottom:5}}><T w='700' c={C.mut}>Why it matters: </T>{info.why}</T>
+                  <T s={12} style={{marginBottom:4}}><T w='700' c={C.mut}>Usual effect: </T>{info.usual}</T>
+                  <Row style={{marginTop:4,justifyContent:'flex-start',flexWrap:'wrap'}}>
+                    <T c={C.mut} s={10}>Impact: <T c={e.impact==='High'?C.dn:e.impact==='Medium'?'#f97316':'#eab308'} s={10} w='700'>{e.impact}</T></T>
+                    <T c={C.mut} s={10} style={{marginLeft:12}}>Release: {day.label}, {p2(d.h)}:{p2(d.m)} IST</T>
+                    {!!e.actualSource&&<T c={C.mut} s={10} style={{marginLeft:12}}>Actual via {e.actualSource}</T>}
+                  </Row>
+                </View>}
+              </View>;
+            })}
+          </View>)}
+        </View>
+      </ScrollView>
+    </Card>
+  </>;
+}
+
 function LineChart({data,color,h=140}){
   const [w,setW]=useState(0),lo=Math.min(...data),hi=Math.max(...data),X=i=>i*(w/(data.length-1)),Y=v=>h-6-(v-lo)/((hi-lo)||1)*(h-12);
   return<View onLayout={e=>setW(e.nativeEvent.layout.width)} style={{height:h,backgroundColor:C.bg,borderRadius:8,overflow:'hidden',borderWidth:1,borderColor:C.line}}>
@@ -369,7 +576,6 @@ function evaluateNonFx(meta,dir,{A,sc,fx,dash,assets}){
 
   if(meta.type==='METAL'||meta.type==='METAL_CROSS'){
     const isCross=meta.type==='METAL_CROSS',qCur=meta.quote,qScore=sc[qCur]?.s||0,qRate=D[qCur]?.rate?.value;
-    // Lower USD/quote score + dovish Fed/CB + sticky CPI + safe-haven flows = bullish precious metals
     const rateFactor=-usdStance*1.1 + (okN(tips10)?(2.0-tips10)*0.4:0);
     const usdFactor=-qScore*0.75;
     const inflFactor=okN(usdCpi)?(usdCpi-2.2)*0.45:0;
@@ -473,7 +679,6 @@ function Picks({A,sc,fx,cal,news,dash,assets,scrollRef}){
   const wk=wkKey(Date.now()),D=fx?.data||{},rows=useMemo(()=>A?pairRows(A,sc):[],[A,sc]);
 
   const build=()=>{
-    // 1. FX Setups
     const mkFx=p=>{
       const d=Math.sign(p.gap);
       const bd=breakdown(p.b,p.q,d,D,A);
@@ -485,7 +690,6 @@ function Picks({A,sc,fx,cal,news,dash,assets,scrollRef}){
     const fxLongs=okFx.filter(p=>p.gap>1).sort((x,y)=>y.gap-x.gap).slice(0,2).map(mkFx);
     const fxShorts=okFx.filter(p=>p.gap<-1).sort((x,y)=>x.gap-y.gap).slice(0,2).map(mkFx);
 
-    // 2. Non-FX Setups (Metals, Indices, Crypto, Oil)
     const nonFxSyms=['XAU/USD','XAG/USD','US30','NAS100','BTC/USD','USOIL'];
     const nonFxAll=nonFxSyms.map(sym=>{
       const meta=resolveSymbol(sym);
@@ -644,7 +848,7 @@ export default function App(){
   const refresh=async(force)=>{setBusy(true);const q=force===true?'?force=1':'';const ok=await Promise.all([load('/api/history','hist',setHist),load('/api/dashboard','dash',setDash),load('/api/fundamentals'+q,'fx',setFx),load('/api/calendar'+q,'cal',setCal),load('/api/cot','cot',setCot),load('/api/assets'+q,'assets',setAssets),loadNews()]);setConn(ok.every(Boolean)?'LIVE':ok.some(Boolean)?'PARTIAL':'OFFLINE · cached');setBusy(false)};
   useEffect(()=>{(async()=>{setTrades(await store.get('trades',[]));const f=await store.get('newsf',null);if(f)setNfS({...NF0,...f});
     if(Platform.OS!=='web'){try{await Notifications.setNotificationChannelAsync('news',{name:'High-impact news',importance:Notifications.AndroidImportance.HIGH});await Notifications.requestPermissionsAsync()}catch{}}
-    refresh()})();const i=setInterval(loadNews,30000),j=setInterval(()=>load('/api/calendar','cal',setCal),3e5),k=setInterval(()=>load('/api/fundamentals','fx',setFx),18e5);return()=>{clearInterval(i);clearInterval(j);clearInterval(k)}},[]);
+    refresh()})();const i=setInterval(loadNews,30000),j=setInterval(()=>load('/api/calendar','cal',setCal),12e4),k=setInterval(()=>load('/api/fundamentals','fx',setFx),18e5);return()=>{clearInterval(i);clearInterval(j);clearInterval(k)}},[]);
   const fund=useMemo(()=>{const o={};CUR.forEach(c=>{const d=fx?.data?.[c]||{};o[c]={stance:d.stance?.value,rate:d.rate?.value,gdp:d.gdp?.value,unemp:d.unemp?.value}});return o},[fx]);
   const A=useMemo(()=>analytics(hist),[hist]),sc=useMemo(()=>scores(fund,A),[fund,A]);
   const send=o=>{setPre({...o,n:Date.now()});setTab(5)};
