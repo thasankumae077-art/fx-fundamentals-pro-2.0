@@ -529,15 +529,64 @@ function matchLiveEvent(ev,pool,requireActual=false){
 
 async function calendar(){
   const now=Date.now();
+  const FF_FILE='/tmp/ff_schedule.json';
+  const FF_TTL=15*60*1000;
   const fromIso=new Date(now-8*864e5).toISOString();
   const toIso=new Date(now+15*864e5).toISOString();
 
+  // Load locked Forex Factory schedule from memory or /tmp disk backup
+  let ffScheduleCache=calendar.ffScheduleCache||null;
+  if(!ffScheduleCache){
+    try{
+      const saved=JSON.parse(fs.readFileSync(FF_FILE,'utf8'));
+      if(saved&&Array.isArray(saved.items)&&saved.items.length){
+        ffScheduleCache=calendar.ffScheduleCache=saved;
+      }
+    }catch{}
+  }
+
+  // Throttle nfs.faireconomy.media to at most once every 15 minutes (even on ?force=1)
+  const hasLockedFF=!!(ffScheduleCache?.items?.length);
+  const lastFFCheck=calendar.lastFFAttempt||ffScheduleCache?.fetchedAt||0;
+  const shouldFetchFF=!hasLockedFF?(now-lastFFCheck>=60000):(now-lastFFCheck>=FF_TTL);
+  if(shouldFetchFF)calendar.lastFFAttempt=now;
+
+  // Fetch TradingView & FXStreet on every refresh for live ACTUALs; fetch FF only when due
   const[ffThis,ffNext,tvRes,fxsRes]=await Promise.allSettled([
-    firstJson(CAL_THIS),
-    firstJson(CAL_NEXT),
+    shouldFetchFF?firstJson(CAL_THIS):Promise.resolve(null),
+    shouldFetchFF?firstJson(CAL_NEXT):Promise.resolve(null),
     tvCalendar(fromIso,toIso),
     fxsCalendar(fromIso,toIso)
   ]);
+
+  if(shouldFetchFF){
+    const ffRaw=[
+      ...(ffThis.status==='fulfilled'&&Array.isArray(ffThis.value)?ffThis.value:[]),
+      ...(ffNext.status==='fulfilled'&&Array.isArray(ffNext.value)?ffNext.value:[])
+    ];
+    if(ffRaw.length){
+      const normalized=ffRaw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>{
+        const ts=(d=>isNaN(d)?null:d.toISOString())(new Date(e.date));
+        if(!ts)return null;
+        return{
+          title:e.title,
+          currency:e.country||e.currency,
+          impact:/^(high|medium|low)$/i.test(e.impact||'')?e.impact[0].toUpperCase()+e.impact.slice(1).toLowerCase():'Low',
+          timestamp:ts,
+          forecast:e.forecast||null,
+          previous:e.previous||null,
+          actual:e.actual||null,
+          actualSource:e.actual?'Forex Factory':null,
+          detail:null
+        };
+      }).filter(Boolean);
+
+      if(normalized.length){
+        ffScheduleCache=calendar.ffScheduleCache={fetchedAt:now,items:normalized};
+        try{fs.writeFileSync(FF_FILE,JSON.stringify(ffScheduleCache))}catch{}
+      }
+    }
+  }
 
   const livePool=[
     ...(tvRes.status==='fulfilled'?tvRes.value:[]),
@@ -548,39 +597,29 @@ async function calendar(){
     fxsRes.status==='fulfilled'&&fxsRes.value.length?'FXStreet':null
   ].filter(Boolean);
 
-  const ffRaw=[
-    ...(ffThis.status==='fulfilled'&&Array.isArray(ffThis.value)?ffThis.value:[]),
-    ...(ffNext.status==='fulfilled'&&Array.isArray(ffNext.value)?ffNext.value:[])
-  ];
+  calendar.actualsMap=calendar.actualsMap||new Map();
 
   let items=[];
-  if(ffRaw.length){
-    // Primary 1-to-1 Forex Factory schedule (no extra non-FF events appended)
-    items=ffRaw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>{
-      const ts=(d=>isNaN(d)?null:d.toISOString())(new Date(e.date));
-      if(!ts)return null;
-      return{
-        title:e.title,
-        currency:e.country||e.currency,
-        impact:/^(high|medium|low)$/i.test(e.impact||'')?e.impact[0].toUpperCase()+e.impact.slice(1).toLowerCase():'Low',
-        timestamp:ts,
-        forecast:e.forecast||null,
-        previous:e.previous||null,
-        actual:e.actual||null,
-        actualSource:e.actual?'Forex Factory':null,
-        detail:null
-      };
-    }).filter(Boolean);
+  if(ffScheduleCache?.items?.length){
+    // Clone locked Forex Factory schedule — title, impact, forecast, previous stay 100% locked
+    items=ffScheduleCache.items.map(e=>({...e}));
 
-    // Enrich each Forex Factory row with released actuals (and detail notes) from TradingView / FXStreet
+    // Use TradingView / FXStreet ONLY to fill missing ACTUAL values (and optional detail text)
     for(const ev of items){
+      const key=`${ev.currency}|${ev.timestamp}|${ev.title}`;
       const isPast=new Date(ev.timestamp).getTime()<=now+5*6e4;
+
       if(!ev.actual&&isPast){
         const actMatch=matchLiveEvent(ev,livePool,true);
         if(actMatch&&actMatch.actual){
           ev.actual=alignUnit(actMatch.actual,ev.forecast||ev.previous);
           ev.actualSource=actMatch.src;
-          if(actMatch.detail)ev.detail=actMatch.detail;
+          calendar.actualsMap.set(key,{actual:ev.actual,actualSource:ev.actualSource});
+          if(!ev.detail&&actMatch.detail)ev.detail=actMatch.detail;
+        }else if(calendar.actualsMap.has(key)){
+          const prevAct=calendar.actualsMap.get(key);
+          ev.actual=prevAct.actual;
+          ev.actualSource=prevAct.actualSource;
         }
       }
       if(!ev.detail){
@@ -589,7 +628,7 @@ async function calendar(){
       }
     }
   } else if(livePool.length){
-    // Fallback only if Forex Factory JSON feed fails or returns empty
+    // Emergency fallback ONLY when no Forex Factory cache exists in memory or /tmp
     const seen=new Set();
     items=livePool.filter(e=>{
       const k=`${e.currency}_${e.timestamp.slice(0,16)}_${e.title.toLowerCase().slice(0,24)}`;
@@ -618,8 +657,9 @@ async function calendar(){
     items:ok,
     actualsCount,
     liveSources,
+    ffLocked:!!(ffScheduleCache?.items?.length),
     updatedAt:now,
-    source:`Forex Factory schedule + live actuals (${liveSources.length?liveSources.join(' / '):'cached'}).`
+    source:`Forex Factory schedule (locked) + live actuals (${liveSources.length?liveSources.join(' / '):'cached'}).`
   };
 }
 
