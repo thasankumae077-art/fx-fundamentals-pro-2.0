@@ -328,57 +328,160 @@ function ImpactFolder({impact}){
 
 const CAL_TABS=[['Today','Today'],['Tomorrow','Tomorrow'],['This Week','This Week'],['Next Week','Next Week'],['Yesterday','Yesterday'],['Past Releases','Past Releases']];
 
-function EconCalendar({cal}){
+function EconCalendar({cal,refreshTick=0}){
   const {width}=useWindowDimensions(),wide=width>=900;
+  const now=useNow();
+  const today0=istMid(now);
+  const baseSun=sunStart(now);
+
   const [cur,setCur]=useState('ALL');
   const [imp,setImp]=useState('ALL');
   const [rangeTab,setRangeTab]=useState('This Week');
-  const [weekOffset,setWeekOffset]=useState(0);
+  const [activeSun,setActiveSun]=useState(()=>sunStart(Date.now()));
   const [openKey,setOpenKey]=useState(null);
-  const now=useNow();
 
-  if(!cal)return<Wait/>;
+  const [viewCal,setViewCal]=useState(cal);
+  const [loading,setLoading]=useState(false);
+  const [fetchErr,setFetchErr]=useState(null);
+  const rangeCache=useRef({});
+  const lastTickRef=useRef(refreshTick);
+  const reqSeq=useRef(0);
 
-  const today0=istMid(now);
-  const baseSun=sunStart(now);
-  const activeSun=baseSun+weekOffset*7*DAY_MS;
+  const [pickerOpen,setPickerOpen]=useState(false);
+  const [pickYear,setPickYear]=useState(()=>ist(Date.now()).y);
+  const [pickMon,setPickMon]=useState(()=>ist(Date.now()).mon);
+
+  const queryRange=useMemo(()=>{
+    if(rangeTab==='Today'){const d=istDayId(today0);return{from:d,to:d,includesToday:true}}
+    if(rangeTab==='Tomorrow'){const d=istDayId(today0+DAY_MS);return{from:d,to:d,includesToday:false}}
+    if(rangeTab==='Yesterday'){const d=istDayId(today0-DAY_MS);return{from:d,to:d,includesToday:false}}
+    if(rangeTab==='Past Releases'){return{from:istDayId(today0-14*DAY_MS),to:istDayId(today0),includesToday:true}}
+    const f=istDayId(activeSun),t=istDayId(activeSun+6*DAY_MS);
+    return{from:f,to:t,includesToday:today0>=activeSun&&today0<activeSun+7*DAY_MS};
+  },[rangeTab,activeSun,today0]);
+
+  useEffect(()=>{
+    if(!cal?.items)return;
+    const defKey=`${istDayId(baseSun)}_${istDayId(baseSun+6*DAY_MS)}`;
+    rangeCache.current[defKey]={t:Date.now(),data:cal};
+    if(rangeTab==='This Week'&&activeSun===baseSun)setViewCal(cal);
+  },[cal]);
+
+  const fetchRange=async(force=false)=>{
+    const key=`${queryRange.from}_${queryRange.to}`;
+    const hit=rangeCache.current[key];
+    if(!force&&hit&&Date.now()-hit.t<120000){
+      setViewCal(hit.data);
+      setFetchErr(null);
+      return;
+    }
+    const seq=++reqSeq.current;
+    setLoading(true);
+    setFetchErr(null);
+    try{
+      const q=`?from=${encodeURIComponent(queryRange.from)}&to=${encodeURIComponent(queryRange.to)}${force?'&force=1':''}`;
+      const r=await fetch(API+'/api/calendar'+q);
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      const j=await r.json();
+      rangeCache.current[key]={t:Date.now(),data:j};
+      if(seq===reqSeq.current)setViewCal(j);
+    }catch(e){
+      if(seq===reqSeq.current){
+        if(hit)setViewCal(hit.data);
+        setFetchErr('Could not load this date range ('+(e.message||'network error')+').');
+      }
+    }finally{
+      if(seq===reqSeq.current)setLoading(false);
+    }
+  };
+
+  useEffect(()=>{
+    const isForce=refreshTick!==lastTickRef.current;
+    lastTickRef.current=refreshTick;
+    fetchRange(isForce);
+  },[queryRange.from,queryRange.to,refreshTick]);
+
+  useEffect(()=>{
+    if(!queryRange.includesToday)return;
+    const id=setInterval(()=>fetchRange(false),120000);
+    return()=>clearInterval(id);
+  },[queryRange.from,queryRange.to,queryRange.includesToday]);
+
   const activeSat=activeSun+6*DAY_MS;
   const fmtShort=t=>{const d=ist(t);return`${MN[d.mon]} ${d.day}`};
+  const fmtShortYr=t=>{const d=ist(t);return`${MN[d.mon]} ${d.day}, ${d.y}`};
 
   const selectTab=tab=>{
     setRangeTab(tab);
     setOpenKey(null);
-    if(tab==='This Week')setWeekOffset(0);
-    else if(tab==='Next Week')setWeekOffset(1);
-    else if(tab==='Today')setWeekOffset(0);
-    else if(tab==='Tomorrow')setWeekOffset(istMid(today0+DAY_MS)>=baseSun+7*DAY_MS?1:0);
-    else if(tab==='Yesterday')setWeekOffset(istMid(today0-DAY_MS)<baseSun?-1:0);
+    if(tab==='This Week')setActiveSun(baseSun);
+    else if(tab==='Next Week')setActiveSun(baseSun+7*DAY_MS);
+    else if(tab==='Today')setActiveSun(baseSun);
+    else if(tab==='Tomorrow')setActiveSun(sunStart(today0+DAY_MS));
+    else if(tab==='Yesterday')setActiveSun(sunStart(today0-DAY_MS));
   };
 
   const shiftWeek=delta=>{
-    const next=weekOffset+delta;
-    setWeekOffset(next);
+    const nextSun=activeSun+delta*7*DAY_MS;
+    setActiveSun(nextSun);
     setOpenKey(null);
-    setRangeTab(next===0?'This Week':next===1?'Next Week':'Custom Week');
+    setRangeTab(nextSun===baseSun?'This Week':nextSun===baseSun+7*DAY_MS?'Next Week':'Custom Week');
+    const d=ist(nextSun);
+    setPickYear(d.y);setPickMon(d.mon);
+  };
+
+  const jumpToDateMs=ms=>{
+    const s=sunStart(ms);
+    setActiveSun(s);
+    setOpenKey(null);
+    setRangeTab(s===baseSun?'This Week':s===baseSun+7*DAY_MS?'Next Week':'Custom Week');
+    setPickerOpen(false);
+  };
+
+  const togglePicker=()=>{
+    if(!pickerOpen){
+      const refMs=rangeTab==='Today'?today0:rangeTab==='Tomorrow'?today0+DAY_MS:rangeTab==='Yesterday'?today0-DAY_MS:activeSun;
+      const d=ist(refMs);
+      setPickYear(d.y);setPickMon(d.mon);
+    }
+    setPickerOpen(o=>!o);
   };
 
   const navLabel=()=>{
-    if(rangeTab==='Today')return`Today: ${WD[ist(today0).wd]} ${fmtShort(today0)}`;
-    if(rangeTab==='Tomorrow'){const t1=today0+DAY_MS;return`Tomorrow: ${WD[ist(t1).wd]} ${fmtShort(t1)}`}
-    if(rangeTab==='Yesterday'){const tm1=today0-DAY_MS;return`Yesterday: ${WD[ist(tm1).wd]} ${fmtShort(tm1)}`}
-    if(rangeTab==='Past Releases')return`Past Releases (Released Actuals)`;
-    const prefix=weekOffset===0?'This Week':weekOffset===1?'Next Week':weekOffset===-1?'Last Week':'Week';
-    return`${prefix}: ${fmtShort(activeSun)} – ${fmtShort(activeSat)}`;
+    if(rangeTab==='Today')return`Today: ${WD[ist(today0).wd]} ${fmtShortYr(today0)}`;
+    if(rangeTab==='Tomorrow'){const t1=today0+DAY_MS;return`Tomorrow: ${WD[ist(t1).wd]} ${fmtShortYr(t1)}`}
+    if(rangeTab==='Yesterday'){const tm1=today0-DAY_MS;return`Yesterday: ${WD[ist(tm1).wd]} ${fmtShortYr(tm1)}`}
+    if(rangeTab==='Past Releases')return`Past 14 Days: ${fmtShort(today0-14*DAY_MS)} – ${fmtShort(today0)}`;
+    const diffWks=Math.round((activeSun-baseSun)/(7*DAY_MS));
+    const prefix=diffWks===0?'This Week':diffWks===1?'Next Week':diffWks===-1?'Last Week':'Week';
+    return`${prefix}: ${fmtShort(activeSun)} – ${fmtShortYr(activeSat)}`;
   };
 
-  const filtered=(cal.items||[]).filter(e=>{
+  const miniCalWeeks=useMemo(()=>{
+    const firstUtc=Date.UTC(pickYear,pickMon,1)-IST;
+    const firstWd=ist(firstUtc).wd;
+    const daysInMon=new Date(Date.UTC(pickYear,pickMon+1,0)).getUTCDate();
+    const cells=[];
+    for(let i=0;i<firstWd;i++)cells.push(null);
+    for(let day=1;day<=daysInMon;day++){
+      const ms=Date.UTC(pickYear,pickMon,day)-IST;
+      cells.push({day,ms,inActiveWk:ms>=activeSun&&ms<activeSun+7*DAY_MS,isToday:istDayId(ms)===istDayId(now)});
+    }
+    while(cells.length%7!==0)cells.push(null);
+    const weeks=[];
+    for(let i=0;i<cells.length;i+=7)weeks.push(cells.slice(i,i+7));
+    return weeks;
+  },[pickYear,pickMon,activeSun,today0]);
+
+  const items=viewCal?.items||[];
+  const filtered=items.filter(e=>{
     if(cur!=='ALL'&&e.currency!==cur)return false;
     if(imp!=='ALL'&&e.impact!==imp)return false;
     const ts=new Date(e.timestamp).getTime();
     if(rangeTab==='Today')return ts>=today0&&ts<today0+DAY_MS;
     if(rangeTab==='Tomorrow')return ts>=today0+DAY_MS&&ts<today0+2*DAY_MS;
     if(rangeTab==='Yesterday')return ts>=today0-DAY_MS&&ts<today0;
-    if(rangeTab==='Past Releases')return ts<now;
+    if(rangeTab==='Past Releases')return ts<now&&ts>=today0-14*DAY_MS;
     return ts>=activeSun&&ts<activeSun+7*DAY_MS;
   });
 
@@ -408,6 +511,8 @@ function EconCalendar({cal}){
 
   const W={date:86,time:56,cur:44,imp:40,det:42,act:74,fcst:72,prev:72};
   const tableMinW=wide?'100%':760;
+  const curYr=ist(now).y;
+  const quickYears=[curYr-1,curYr,curYr+1,curYr+2];
 
   const TableHeader=()=><View style={{flexDirection:'row',alignItems:'center',backgroundColor:'#0d1636',paddingVertical:8,paddingHorizontal:8,borderBottomWidth:1,borderBottomColor:C.line}}>
     <T c={C.mut} s={10} w='800' style={{width:W.date}}>DATE</T>
@@ -423,46 +528,93 @@ function EconCalendar({cal}){
 
   return<>
     <T s={24} w='800'>Economic calendar</T>
-    <Note>All times in IST (Asia/Kolkata). {cal.source} Actuals auto-update every 2 min (Green = better than forecast, Red = worse; inverted for unemployment, claims & deficits).{cal.stale?' Showing stale cache.':''}</Note>
+    <Note>All times in IST (Asia/Kolkata). Schedule & live actuals powered dynamically by TradingView & FXStreet for any past or future date range. Actuals auto-update every 2 min (Green = better than forecast, Red = worse; inverted for unemployment, claims & deficits).{viewCal?.provider?` Active feed: ${viewCal.provider}.`:''}{viewCal?.stale?' Showing stale cache.':''}</Note>
 
     <View style={{flexDirection:'row',alignItems:'center',justifyContent:'space-between',backgroundColor:C.card,borderWidth:1,borderColor:C.line,borderRadius:10,paddingVertical:8,paddingHorizontal:10,marginBottom:10}}>
       <TouchableOpacity onPress={()=>shiftWeek(-1)} style={{paddingHorizontal:12,paddingVertical:6,backgroundColor:C.bg,borderRadius:8,borderWidth:1,borderColor:C.line}}>
         <T s={14} w='800'>‹</T>
       </TouchableOpacity>
-      <View style={{alignItems:'center',flex:1,paddingHorizontal:8}}>
-        <T s={14} w='800'>{navLabel()}</T>
-        <T c={C.mut} s={10}>{filtered.length} event{filtered.length===1?'':'s'} shown{cal.actualsCount?` · ${cal.actualsCount} live actuals synced`:''}</T>
-      </View>
+      <TouchableOpacity onPress={togglePicker} style={{alignItems:'center',flex:1,paddingHorizontal:8}}>
+        <Row style={{justifyContent:'center'}}>
+          <T s={14} w='800'>{navLabel()}</T>
+          <View style={{marginLeft:8,backgroundColor:pickerOpen?C.ac:C.bg,borderRadius:6,borderWidth:1,borderColor:pickerOpen?C.ac:C.line,paddingHorizontal:7,paddingVertical:2}}>
+            <T s={10} w='700' c={pickerOpen?'#fff':C.ac}>📅 Jump</T>
+          </View>
+        </Row>
+        <T c={C.mut} s={10} style={{marginTop:2}}>
+          {loading?'Loading live schedule…':`${filtered.length} event${filtered.length===1?'':'s'} shown${viewCal?.actualsCount?` · ${viewCal.actualsCount} live actuals`:''}`}
+        </T>
+      </TouchableOpacity>
       <TouchableOpacity onPress={()=>shiftWeek(1)} style={{paddingHorizontal:12,paddingVertical:6,backgroundColor:C.bg,borderRadius:8,borderWidth:1,borderColor:C.line}}>
         <T s={14} w='800'>›</T>
       </TouchableOpacity>
     </View>
 
+    {pickerOpen&&<Card title='Jump to any month, year, or week' style={{borderColor:C.ac}}>
+      <Row style={{marginBottom:8}}>
+        <Row style={{justifyContent:'flex-start',flexWrap:'wrap'}}>
+          <TouchableOpacity onPress={()=>setPickYear(y=>y-1)} style={{paddingHorizontal:9,paddingVertical:4,backgroundColor:C.bg,borderRadius:6,borderWidth:1,borderColor:C.line,marginRight:6}}><T s={12} w='800'>‹</T></TouchableOpacity>
+          {quickYears.map(y=><TouchableOpacity key={y} onPress={()=>setPickYear(y)} style={{paddingHorizontal:10,paddingVertical:4,borderRadius:6,marginRight:6,backgroundColor:pickYear===y?C.ac:C.bg,borderWidth:1,borderColor:pickYear===y?C.ac:C.line}}><T s={12} w='700' c={pickYear===y?'#fff':C.tx}>{y}</T></TouchableOpacity>)}
+          {!quickYears.includes(pickYear)&&<View style={{paddingHorizontal:10,paddingVertical:4,borderRadius:6,marginRight:6,backgroundColor:C.ac}}><T s={12} w='800' c='#fff'>{pickYear}</T></View>}
+          <TouchableOpacity onPress={()=>setPickYear(y=>y+1)} style={{paddingHorizontal:9,paddingVertical:4,backgroundColor:C.bg,borderRadius:6,borderWidth:1,borderColor:C.line}}><T s={12} w='800'>›</T></TouchableOpacity>
+        </Row>
+        <TouchableOpacity onPress={()=>{setPickerOpen(false);selectTab('This Week')}} style={{paddingHorizontal:10,paddingVertical:4,borderRadius:6,backgroundColor:C.line}}>
+          <T s={11} w='700'>Today</T>
+        </TouchableOpacity>
+      </Row>
+
+      <View style={{flexDirection:'row',flexWrap:'wrap',marginBottom:10}}>
+        {MN.map((m,idx)=><TouchableOpacity key={m} onPress={()=>setPickMon(idx)} style={{width:'16.66%',padding:2}}>
+          <View style={{paddingVertical:5,borderRadius:6,alignItems:'center',backgroundColor:pickMon===idx?C.ac:C.bg,borderWidth:1,borderColor:pickMon===idx?C.ac:C.line}}>
+            <T s={11} w='700' c={pickMon===idx?'#fff':C.tx}>{m}</T>
+          </View>
+        </TouchableOpacity>)}
+      </View>
+
+      <View style={{backgroundColor:C.bg,borderRadius:8,borderWidth:1,borderColor:C.line,padding:8}}>
+        <Row style={{marginBottom:6}}>
+          <T s={12} w='800'>{MN[pickMon]} {pickYear} <T c={C.mut} s={11} w='400'>(tap any day to load that week)</T></T>
+          <TouchableOpacity onPress={()=>jumpToDateMs(Date.UTC(pickYear,pickMon,1)-IST)} style={{paddingHorizontal:8,paddingVertical:3,backgroundColor:C.ac,borderRadius:6}}>
+            <T s={10} w='800' c='#fff'>Load 1st week →</T>
+          </TouchableOpacity>
+        </Row>
+        <Row style={{marginBottom:4}}>{WD.map(w=><T key={w} c={C.mut} s={10} w='700' style={{flex:1,textAlign:'center'}}>{w}</T>)}</Row>
+        {miniCalWeeks.map((wk,wi)=><Row key={wi} style={{marginBottom:2}}>
+          {wk.map((cell,ci)=>cell?<TouchableOpacity key={ci} onPress={()=>jumpToDateMs(cell.ms)} style={{flex:1,paddingVertical:5,marginHorizontal:1,borderRadius:5,alignItems:'center',backgroundColor:cell.inActiveWk?'#1d4ed8':cell.isToday?'#14532d':'transparent'}}>
+            <T s={12} w={cell.inActiveWk||cell.isToday?'800':'400'} c={cell.inActiveWk||cell.isToday?'#fff':C.tx}>{cell.day}</T>
+          </TouchableOpacity>:<View key={ci} style={{flex:1}}/>)}
+        </Row>)}
+      </View>
+    </Card>}
+
     <Pills opts={CAL_TABS} val={rangeTab} set={selectTab}/>
     <Pills opts={[['ALL','All'],...MAJ.map(c=>[c,c])]} val={cur} set={setCur}/>
     <Pills opts={[['ALL','All Impact'],['High','🔴 High Impact'],['Medium','🟠 Medium Impact']]} val={imp} set={setImp}/>
 
-    <Card style={{padding:0,overflow:'hidden'}}>
+    {!!fetchErr&&<Card style={{borderColor:'#f59e0b'}}><T c='#f59e0b' s={12}>{fetchErr}</T></Card>}
+
+    <Card style={{padding:0,overflow:'hidden',opacity:loading?.7:1}}>
       <ScrollView horizontal={!wide} showsHorizontalScrollIndicator={!wide}>
         <View style={{width:tableMinW,minWidth:wide?'100%':760}}>
           <TableHeader/>
-          {!dayList.length&&<View style={{padding:16}}><T c={C.mut} s={13}>No economic events match these filters.</T></View>}
+          {!dayList.length&&<View style={{padding:16}}><T c={C.mut} s={13}>{loading?'Loading economic events…':'No economic events match these filters.'}</T></View>}
           {dayList.map((day,di)=><View key={day.key} style={{borderTopWidth:di===0?0:2,borderTopColor:C.line}}>
             {day.events.length===0?<View style={{flexDirection:'row',alignItems:'center',paddingVertical:9,paddingHorizontal:8,backgroundColor:day.isToday?'#132046':'transparent'}}>
               <View style={{width:W.date}}><T s={12} w='800' c={day.isToday?C.ac:C.tx}>{day.label}</T></View>
-              <T c={C.mut} s={12} style={{flex:1,fontStyle:'italic'}}>No scheduled events matching filters</T>
+              <T c={C.mut} s={12} style={{flex:1,fontStyle:'italic'}}>{loading?'Fetching events…':'No scheduled events matching filters'}</T>
             </View>:day.events.map((e,idx)=>{
               const ts=new Date(e.timestamp).getTime(),d=ist(ts),past=ts<now,v=verdict(e);
-              const rKey=`${day.key}_${idx}_${e.currency}_${e.title}`;
+              const rKey=e.id||`${day.key}_${idx}_${e.currency}_${e.title}`;
               const isOpen=openKey===rKey;
               const info=isOpen?eventDetailInfo(e):null;
-              const actColor=e.actual?(v>0?C.up:v<0?C.dn:C.tx):C.mut;
+              const hasAct=e.actual!=null&&e.actual!=='';
+              const actColor=hasAct?(v>0?C.up:v<0?C.dn:C.tx):C.mut;
               return<View key={rKey} style={{borderTopWidth:idx===0?0:1,borderTopColor:C.line,backgroundColor:isOpen?'#16224a':day.isToday&&idx%2===0?'#111d42':idx%2===1?'#0e1733':'transparent'}}>
-                <View style={{flexDirection:'row',alignItems:'center',paddingVertical:8,paddingHorizontal:8,opacity:past&&!e.actual?.75:1}}>
+                <View style={{flexDirection:'row',alignItems:'center',paddingVertical:8,paddingHorizontal:8,opacity:past&&!hasAct?.75:1}}>
                   <View style={{width:W.date,paddingRight:4}}>
                     {idx===0&&<T s={12} w='800' c={day.isToday?C.ac:C.tx}>{day.label}</T>}
                   </View>
-                  <T s={12} w='700' c={past?C.mut:C.tx} style={{width:W.time}}>{p2(d.h)}:{p2(d.m)}</T>
+                  <T s={12} w='700' c={past?C.mut:C.tx} style={{width:W.time}}>{e.time||`${p2(d.h)}:${p2(d.m)}`}</T>
                   <View style={{width:W.cur,alignItems:'center'}}>
                     <View style={{backgroundColor:C.bg,borderWidth:1,borderColor:C.line,borderRadius:4,paddingHorizontal:5,paddingVertical:1}}>
                       <T s={11} w='800' c={C.ac}>{e.currency}</T>
@@ -479,7 +631,7 @@ function EconCalendar({cal}){
                       <T s={12}>📄</T>
                     </View>
                   </TouchableOpacity>
-                  <T s={13} w='800' c={actColor} style={{width:W.act,textAlign:'right'}}>{e.actual||'—'}</T>
+                  <T s={13} w='800' c={actColor} style={{width:W.act,textAlign:'right'}}>{hasAct?e.actual:'—'}</T>
                   <T s={12} c={C.tx} style={{width:W.fcst,textAlign:'right'}}>{e.forecast||'—'}</T>
                   <T s={12} c={C.mut} style={{width:W.prev,textAlign:'right'}}>{e.previous||'—'}</T>
                 </View>
@@ -494,7 +646,7 @@ function EconCalendar({cal}){
                   <T s={12} style={{marginBottom:4}}><T w='700' c={C.mut}>Usual effect: </T>{info.usual}</T>
                   <Row style={{marginTop:4,justifyContent:'flex-start',flexWrap:'wrap'}}>
                     <T c={C.mut} s={10}>Impact: <T c={e.impact==='High'?C.dn:e.impact==='Medium'?'#f97316':'#eab308'} s={10} w='700'>{e.impact}</T></T>
-                    <T c={C.mut} s={10} style={{marginLeft:12}}>Release: {day.label}, {p2(d.h)}:{p2(d.m)} IST</T>
+                    <T c={C.mut} s={10} style={{marginLeft:12}}>Release: {day.label}, {e.time||`${p2(d.h)}:${p2(d.m)}`} IST</T>
                     {!!e.actualSource&&<T c={C.mut} s={10} style={{marginLeft:12}}>Actual via {e.actualSource}</T>}
                   </Row>
                 </View>}
