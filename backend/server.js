@@ -534,24 +534,24 @@ async function calendar(){
   const fromIso=new Date(now-8*864e5).toISOString();
   const toIso=new Date(now+15*864e5).toISOString();
 
-  // Load locked Forex Factory schedule from memory or /tmp disk backup
-  let ffScheduleCache=calendar.ffScheduleCache||null;
+  // Load locked Forex Factory schedule from memory or /tmp disk backup (only genuine FF data)
+  let ffScheduleCache=calendar.ffScheduleCache?.ffLocked?calendar.ffScheduleCache:null;
   if(!ffScheduleCache){
     try{
       const saved=JSON.parse(fs.readFileSync(FF_FILE,'utf8'));
-      if(saved&&Array.isArray(saved.items)&&saved.items.length){
+      if(saved&&saved.ffLocked===true&&Array.isArray(saved.items)&&saved.items.length){
         ffScheduleCache=calendar.ffScheduleCache=saved;
       }
     }catch{}
   }
 
-  // Throttle nfs.faireconomy.media to at most once every 15 minutes (even on ?force=1)
-  const hasLockedFF=!!(ffScheduleCache?.items?.length);
+  // If FF is locked, throttle nfs.faireconomy.media to once every 15 minutes;
+  // if NOT locked yet, retry nfs.faireconomy.media immediately on every Refresh (?force=1) or cycle.
+  const hasLockedFF=!!(ffScheduleCache?.ffLocked&&ffScheduleCache.items?.length);
   const lastFFCheck=calendar.lastFFAttempt||ffScheduleCache?.fetchedAt||0;
-  const shouldFetchFF=!hasLockedFF?(now-lastFFCheck>=60000):(now-lastFFCheck>=FF_TTL);
+  const shouldFetchFF=!hasLockedFF||(now-lastFFCheck>=FF_TTL);
   if(shouldFetchFF)calendar.lastFFAttempt=now;
 
-  // Fetch TradingView & FXStreet on every refresh for live ACTUALs; fetch FF only when due
   const[ffThis,ffNext,tvRes,fxsRes]=await Promise.allSettled([
     shouldFetchFF?firstJson(CAL_THIS):Promise.resolve(null),
     shouldFetchFF?firstJson(CAL_NEXT):Promise.resolve(null),
@@ -560,31 +560,29 @@ async function calendar(){
   ]);
 
   if(shouldFetchFF){
-    const ffRaw=[
-      ...(ffThis.status==='fulfilled'&&Array.isArray(ffThis.value)?ffThis.value:[]),
-      ...(ffNext.status==='fulfilled'&&Array.isArray(ffNext.value)?ffNext.value:[])
-    ];
-    if(ffRaw.length){
-      const normalized=ffRaw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>{
-        const ts=(d=>isNaN(d)?null:d.toISOString())(new Date(e.date));
-        if(!ts)return null;
-        return{
-          title:e.title,
-          currency:e.country||e.currency,
-          impact:/^(high|medium|low)$/i.test(e.impact||'')?e.impact[0].toUpperCase()+e.impact.slice(1).toLowerCase():'Low',
-          timestamp:ts,
-          forecast:e.forecast||null,
-          previous:e.previous||null,
-          actual:e.actual||null,
-          actualSource:e.actual?'Forex Factory':null,
-          detail:null
-        };
-      }).filter(Boolean);
+    const ffThisArr=ffThis.status==='fulfilled'&&Array.isArray(ffThis.value)?ffThis.value:[];
+    const ffNextArr=ffNext.status==='fulfilled'&&Array.isArray(ffNext.value)?ffNext.value:[];
+    const ffRaw=[...ffThisArr,...ffNextArr];
+    const ffEvents=ffRaw.filter(e=>MAJ.includes(e.country||e.currency)&&e.date).map(e=>{
+      const ts=(d=>isNaN(d)?null:d.toISOString())(new Date(e.date));
+      if(!ts)return null;
+      return{
+        title:e.title,
+        currency:e.country||e.currency,
+        impact:/^(high|medium|low)$/i.test(e.impact||'')?e.impact[0].toUpperCase()+e.impact.slice(1).toLowerCase():'Low',
+        timestamp:ts,
+        forecast:e.forecast||null,
+        previous:e.previous||null,
+        actual:e.actual||null,
+        actualSource:e.actual?'Forex Factory':null,
+        detail:null
+      };
+    }).filter(Boolean);
 
-      if(normalized.length){
-        ffScheduleCache=calendar.ffScheduleCache={fetchedAt:now,items:normalized};
-        try{fs.writeFileSync(FF_FILE,JSON.stringify(ffScheduleCache))}catch{}
-      }
+    // ONLY save and lock ffScheduleCache when nfs.faireconomy.media returns valid Forex Factory events
+    if(ffThis.status==='fulfilled'&&ffEvents.length>0){
+      ffScheduleCache=calendar.ffScheduleCache={ffLocked:true,fetchedAt:now,items:ffEvents};
+      try{fs.writeFileSync(FF_FILE,JSON.stringify(ffScheduleCache))}catch{}
     }
   }
 
@@ -600,7 +598,9 @@ async function calendar(){
   calendar.actualsMap=calendar.actualsMap||new Map();
 
   let items=[];
-  if(ffScheduleCache?.items?.length){
+  let ffLocked=false;
+  if(ffScheduleCache?.ffLocked&&ffScheduleCache.items?.length){
+    ffLocked=true;
     // Clone locked Forex Factory schedule — title, impact, forecast, previous stay 100% locked
     items=ffScheduleCache.items.map(e=>({...e}));
 
@@ -628,7 +628,8 @@ async function calendar(){
       }
     }
   } else if(livePool.length){
-    // Emergency fallback ONLY when no Forex Factory cache exists in memory or /tmp
+    // Temporary unlocked fallback — NEVER saved to ffScheduleCache or /tmp/ff_schedule.json
+    ffLocked=false;
     const seen=new Set();
     items=livePool.filter(e=>{
       const k=`${e.currency}_${e.timestamp.slice(0,16)}_${e.title.toLowerCase().slice(0,24)}`;
@@ -657,9 +658,11 @@ async function calendar(){
     items:ok,
     actualsCount,
     liveSources,
-    ffLocked:!!(ffScheduleCache?.items?.length),
+    ffLocked,
     updatedAt:now,
-    source:`Forex Factory schedule (locked) + live actuals (${liveSources.length?liveSources.join(' / '):'cached'}).`
+    source:ffLocked
+      ?`Forex Factory schedule (locked) + live actuals (${liveSources.length?liveSources.join(' / '):'cached'}).`
+      :`Temporary fallback (${liveSources.join(' / ')}) — Forex Factory feed unavailable, will retry on refresh.`
   };
 }
 
