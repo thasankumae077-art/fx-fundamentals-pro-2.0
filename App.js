@@ -817,8 +817,9 @@ function NextHigh({ cal }) {
 // 7. OVERVIEW & CONSOLIDATED MACRO EXECUTIVE DASHBOARD (PRIORITY 1, 3, 5)
 // ============================================================================
 
-function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, cal }) {
+function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, cal, dash }) { 
   const surprises = useMemo(() => computeEconomicSurprises(cal), [cal]);
+  const cbExp = useMemo(() => computeCentralBankExpectations(A, fx, dash), [A, fx, dash]);
   const [strTf, setStrTf] = useState(21);
   const [corrWin, setCorrWin] = useState('60D');
   const [methodOpen, setMethodOpen] = useState(false);
@@ -920,6 +921,48 @@ function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, ca
           </View>
           <TouchableOpacity onPress={() => onNavigate(7)}>
             <T s={10} c={C.ac} w='700'>Surprise Tracker →</T>
+          </TouchableOpacity>
+        </View>
+<View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: C.line, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center' }}>
+            <T s={10} c={C.mut} w='800' style={{ marginRight: 8 }}>2Y RATE PATH RADAR:</T>
+            <TouchableOpacity onPress={() => onNavigate(1)}>
+              <Tag
+                text={
+                  cbExp.topHawkish
+                    ? `▲ Hawkish: ${cbExp.topHawkish.cur} (${cbExp.topHawkish.impliedBps >= 0 ? '+' : ''}${cbExp.topHawkish.impliedBps} bps · ${cbExp.topHawkish.stepLabel})`
+                    : '▲ Hawkish: Loading…'
+                }
+                bg={cbExp.topHawkish ? C.upBg : C.line}
+                fg={cbExp.topHawkish ? C.upTx : C.mut}
+                border={cbExp.topHawkish ? C.up : C.line}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => onNavigate(1)}>
+              <Tag
+                text={
+                  cbExp.topDovish
+                    ? `▼ Dovish: ${cbExp.topDovish.cur} (${cbExp.topDovish.impliedBps >= 0 ? '+' : ''}${cbExp.topDovish.impliedBps} bps · ${cbExp.topDovish.stepLabel})`
+                    : '▼ Dovish: Loading…'
+                }
+                bg={cbExp.topDovish ? C.dnBg : C.line}
+                fg={cbExp.topDovish ? C.dnTx : C.mut}
+                border={cbExp.topDovish ? C.dn : C.line}
+              />
+            </TouchableOpacity>
+            {cbExp.divergenceCount > 0 && (
+              <TouchableOpacity onPress={() => onNavigate(1)}>
+                <Tag
+                  text={`⚠ ${cbExp.divergenceCount} CB Divergence${cbExp.divergenceCount > 1 ? 's' : ''}`}
+                  bg={C.warnBg}
+                  fg={C.warnTx}
+                  border={C.warn}
+                />
+              </TouchableOpacity>
+            )}
+          </View>
+          <TouchableOpacity onPress={() => onNavigate(1)}>
+            <T s={10} c={C.ac} w='700'>Rate Path Engine →</T>
           </TouchableOpacity>
         </View>
         {!!exec?.upcomingHighImpact?.length && (
@@ -1308,9 +1351,236 @@ function SwingIntel({ intel, onOpenScore }) {
 // ============================================================================
 // 9. EXPANDED FUNDAMENTALS SCREEN (PRIORITY 1.1, 1.4 & PRIORITY 2.7–2.13)
 // ============================================================================
+const CB_EXP_CUR = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD', 'NZD'];
 
-function Fundamentals({ fx, cot, onOpenScore }) {
+function cbRegimeStyle(regime) {
+  if (regime === 'HAWKISH REPRICING') return { bg: C.upBg, fg: C.upTx, border: C.up };
+  if (regime === 'MILD HIKE BIAS') return { bg: '#0f3d26', fg: '#86efac', border: '#22c55e' };
+  if (regime === 'DOVISH CUT PRICING') return { bg: C.dnBg, fg: C.dnTx, border: C.dn };
+  if (regime === 'MILD CUT BIAS') return { bg: '#4c1118', fg: '#fca5a5', border: '#ef4444' };
+  return { bg: C.line, fg: C.tx, border: '#64748b' };
+}
+
+function fmtStepEq(steps25) {
+  if (!okN(steps25)) return '—';
+  if (steps25 === 0) return '0.0 (Hold)';
+  const abs = Math.abs(steps25).toFixed(1);
+  return steps25 > 0
+    ? `+${abs} hike${abs === '1.0' ? '' : 's'}`
+    : `-${abs} cut${abs === '1.0' ? '' : 's'}`;
+}
+
+function computeCentralBankExpectations(A, fx, dash) {
+  const D = fx?.data || {};
+  const fred = dash?.fred || {};
+
+  const list = CB_EXP_CUR.map(c => {
+    const d = D[c] || {};
+    const policyRate = d.rate?.value ?? null;
+    // Prefer dedicated 2Y sovereign yield (FRED DGS2 for USD or backend yield2y/y2), falling back to yieldShort (2Y proxy)
+    const y2 =
+      d.yield2y?.value ??
+      d.y2?.value ??
+      (c === 'USD' ? fred.us2y?.value : null) ??
+      A?.yields?.[c]?.y2 ??
+      d.yieldShort?.value ??
+      null;
+    const y10 =
+      d.yield10y?.value ??
+      d.y10?.value ??
+      (c === 'USD' ? fred.us10y?.value : null) ??
+      A?.yields?.[c]?.y10 ??
+      null;
+    const cpi = d.cpi?.value ?? null;
+
+    const guidance = d.centralBank?.guidance || 'Data-Dependent';
+    const stanceNum = d.stance?.value ?? 0;
+
+    const available = okN(policyRate) && okN(y2);
+    const impliedBps = available ? Math.round((y2 - policyRate) * 100) : null;
+    const steps25 = available ? Math.round((impliedBps / 25) * 10) / 10 : null;
+    const slope2s10s = okN(y10) && okN(y2) ? Math.round((y10 - y2) * 100) : null;
+    const slopeLabel =
+      slope2s10s == null ? '—' : slope2s10s < 0 ? 'Inverted' : slope2s10s <= 15 ? 'Flat' : 'Steepening';
+    const realPolicyRate = okN(policyRate) && okN(cpi) ? Number((policyRate - cpi).toFixed(2)) : null;
+
+    let regime = 'UNAVAILABLE';
+    if (available) {
+      if (impliedBps >= 25) regime = 'HAWKISH REPRICING';
+      else if (impliedBps >= 10) regime = 'MILD HIKE BIAS';
+      else if (impliedBps <= -25) regime = 'DOVISH CUT PRICING';
+      else if (impliedBps <= -10) regime = 'MILD CUT BIAS';
+      else regime = 'ON HOLD';
+    }
+
+    const cbIsHawkish = guidance === 'Hawkish' || stanceNum > 0;
+    const cbIsDovish = guidance === 'Dovish' || stanceNum < 0;
+    let divergenceFlag = false;
+    let divergenceNote = null;
+
+    if (available) {
+      if (cbIsHawkish && impliedBps <= -10) {
+        divergenceFlag = true;
+        divergenceNote = `Market pricing ${fmtStepEq(steps25)} (${impliedBps} bps) vs Hawkish ${BANKS[c]?.[0] || c} stance.`;
+      } else if (cbIsDovish && impliedBps >= 10) {
+        divergenceFlag = true;
+        divergenceNote = `Market pricing ${fmtStepEq(steps25)} (+${impliedBps} bps) vs Dovish ${BANKS[c]?.[0] || c} stance.`;
+      }
+    }
+
+    const y2Source =
+      d.yield2y?.source ||
+      (c === 'USD' && fred.us2y ? fred.us2y.source || 'FRED DGS2' : null) ||
+      d.yieldShort?.source ||
+      'Sovereign 2Y Proxy';
+
+    return {
+      cur: c,
+      bank: BANKS[c]?.[0] || c,
+      available,
+      policyRate,
+      y2,
+      y10,
+      cpi,
+      impliedBps,
+      steps25,
+      stepLabel: fmtStepEq(steps25),
+      slope2s10s,
+      slopeLabel,
+      realPolicyRate,
+      regime,
+      guidance,
+      divergenceFlag,
+      divergenceNote,
+      y2Source,
+      stale: !!(d.rate?.stale || d.yieldShort?.stale || d.yield2y?.stale)
+    };
+  });
+
+  const active = list.filter(x => x.available).sort((a, b) => b.impliedBps - a.impliedBps);
+  const topHawkish = active[0] || null;
+  const topDovish = active.length > 1 ? active[active.length - 1] : null;
+  const maxAbsBps = Math.max(25, ...active.map(x => Math.abs(x.impliedBps)));
+  const divergenceCount = active.filter(x => x.divergenceFlag).length;
+  const widestSpreadBps =
+    topHawkish && topDovish ? topHawkish.impliedBps - topDovish.impliedBps : null;
+
+  return {
+    list,
+    ranked: active,
+    byCur: Object.fromEntries(list.map(x => [x.cur, x])),
+    topHawkish,
+    topDovish,
+    maxAbsBps,
+    divergenceCount,
+    widestSpreadBps
+  };
+}
+
+function CentralBankExpectationsCard({ data, onOpenScore }) {
+  if (!data) return null;
+  const rows = [...data.list].sort((a, b) => {
+    if (a.available !== b.available) return a.available ? -1 : 1;
+    return (b.impliedBps ?? -999) - (a.impliedBps ?? -999);
+  });
+
+  return (
+    <Card
+      title='G8 Central Bank Expectations Engine (2Y Implied Path vs. Policy Rate)'
+      style={{ borderColor: data.divergenceCount > 0 ? C.warn : C.ac }}
+      right={
+        data.widestSpreadBps != null ? (
+          <Tag
+            text={`Max Divergence: ${data.topHawkish.cur}/${data.topDovish.cur} (${data.widestSpreadBps} bps)`}
+            bg={C.acBg}
+            fg='#fff'
+            style={{ marginRight: 0, marginBottom: 0 }}
+          />
+        ) : null
+      }
+    >
+      {data.ranked.length === 0 ? (
+        <T s={12} c={C.mut}>Waiting for sovereign 2Y yield and central bank policy rate feeds…</T>
+      ) : (
+        <>
+          {rows.map(r => {
+            const st = cbRegimeStyle(r.regime);
+            const barW = r.available ? Math.min(100, (Math.abs(r.impliedBps) / data.maxAbsBps) * 100) : 0;
+            const isPos = r.available && r.impliedBps > 0;
+            const isNeg = r.available && r.impliedBps < 0;
+
+            return (
+              <TouchableOpacity
+                key={r.cur}
+                onPress={() => onOpenScore && onOpenScore(r.cur)}
+                style={{
+                  paddingVertical: 8,
+                  borderBottomWidth: 1,
+                  borderBottomColor: 'rgba(30,42,82,0.6)',
+                  backgroundColor: r.divergenceFlag ? 'rgba(245,158,11,0.06)' : 'transparent'
+                }}
+              >
+                <Row style={{ marginBottom: 4 }}>
+                  <Row style={{ justifyContent: 'flex-start' }}>
+                    <T s={13} w='800' style={{ width: 38 }}>{r.cur}</T>
+                    <T s={11} c={C.mut} style={{ marginRight: 6 }}>{r.bank}</T>
+                    <Tag text={r.regime} bg={st.bg} fg={st.fg} border={st.border} style={{ marginBottom: 0 }} />
+                    {r.divergenceFlag && (
+                      <Tag text='⚠ DIVERGENCE' bg={C.warnBg} fg={C.warnTx} border={C.warn} style={{ marginBottom: 0 }} />
+                    )}
+                  </Row>
+                  <T s={12} w='800' c={r.available ? col(r.impliedBps) : C.mut}>
+                    {r.available ? `${r.impliedBps >= 0 ? '+' : ''}${r.impliedBps} bps (${r.stepLabel})` : 'N/A'}
+                  </T>
+                </Row>
+
+                {/* Bi-Directional Implied Path Bar (Cuts Left ◀ | ▶ Hikes Right) */}
+                <View style={{ flexDirection: 'row', alignItems: 'center', height: 12, marginVertical: 4 }}>
+                  <View style={{ flex: 1, alignItems: 'flex-end', backgroundColor: C.bg, height: 10, borderTopLeftRadius: 3, borderBottomLeftRadius: 3, overflow: 'hidden' }}>
+                    {isNeg && <View style={{ width: `${barW}%`, height: 10, backgroundColor: C.dn }} />}
+                  </View>
+                  <View style={{ width: 1.5, height: 14, backgroundColor: C.line }} />
+                  <View style={{ flex: 1, alignItems: 'flex-start', backgroundColor: C.bg, height: 10, borderTopRightRadius: 3, borderBottomRightRadius: 3, overflow: 'hidden' }}>
+                    {isPos && <View style={{ width: `${barW}%`, height: 10, backgroundColor: C.up }} />}
+                  </View>
+                </View>
+
+                <Row style={{ flexWrap: 'wrap', marginTop: 2 }}>
+                  <T s={11} c={C.mut}>
+                    Policy→2Y: <T s={11} w='700'>{okN(r.policyRate) ? f2(r.policyRate) + '%' : '—'} → {okN(r.y2) ? f2(r.y2) + '%' : '—'}</T>
+                  </T>
+                  <T s={11} c={C.mut}>
+                    2s10s: <T s={11} w='700' c={r.slope2s10s != null ? (r.slope2s10s < 0 ? C.dn : C.up) : C.mut}>
+                      {r.slope2s10s != null ? `${r.slope2s10s >= 0 ? '+' : ''}${r.slope2s10s} bps (${r.slopeLabel})` : '—'}
+                    </T>
+                  </T>
+                  <T s={11} c={C.mut}>
+                    Real Rate: <T s={11} w='700' c={r.realPolicyRate != null ? col(r.realPolicyRate) : C.mut}>
+                      {r.realPolicyRate != null ? `${signedF2(r.realPolicyRate)}%` : '—'}
+                    </T>
+                  </T>
+                </Row>
+
+                {r.divergenceFlag && (
+                  <T s={10} c={C.warnTx} style={{ marginTop: 3 }}>
+                    ↳ {r.divergenceNote}
+                  </T>
+                )}
+              </TouchableOpacity>
+            );
+          })}
+
+          <T s={10} c={C.mut} style={{ marginTop: 7 }}>
+            Implied 12M Path = (2Y Yield − Policy Rate) × 100 bps · 25bp step eq = bps / 25 · Real Policy Rate = Policy Rate − CPI. Tap any row for 7-factor macro breakdown.
+          </T>
+        </>
+      )}
+    </Card>
+  );
+}
+function Fundamentals({ A, fx, cot, dash, onOpenScore }) {
   const [focusCur, setFocusCur] = useState('ALL');
+  const cbExp = useMemo(() => computeCentralBankExpectations(A, fx, dash), [A, fx, dash]);
   if (!fx) return <Wait />;
   const D = fx.data || {};
   const K = cot?.data || {};
@@ -1324,7 +1594,7 @@ function Fundamentals({ fx, cot, onOpenScore }) {
       </Note>
 
       <Pills opts={[['ALL', 'All G8'], ...CUR.map(c => [c, c])]} val={focusCur} set={setFocusCur} />
-
+<CentralBankExpectationsCard data={cbExp} onOpenScore={onOpenScore} />
       {list.map(c => {
         const d = D[c] || {};
         const sc = fx.scores?.[c];
@@ -3648,9 +3918,9 @@ export default function App() {
       refreshControl={<RefreshControl refreshing={busy} onRefresh={() => refresh(true)} tintColor={C.ac} colors={[C.ac]} />}
     >
       {(tab === 0 || tab === 4) && <NextHigh cal={cal} />}
-      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
+      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} dash={dash} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
       {tab === 9 && <SwingIntel intel={intel} onOpenScore={setScoreModalCur} />}
-      {tab === 1 && <Fundamentals fx={fx} cot={cot} onOpenScore={setScoreModalCur} />}
+      {tab === 1 && <Fundamentals A={A} fx={fx} cot={cot} onOpenScore={setScoreModalCur} />}
       {tab === 2 && <Scanner A={A} fx={fx} cot={cot} intel={intel} gold={gold} send={sendToRisk} onOpenScore={setScoreModalCur} />}
       {tab === 3 && <Macro d={dash} assets={assets} intel={intel} gold={gold} />}
       {tab === 4 && <News news={news} trades={trades} nf={nf} setNf={setNf} />}
