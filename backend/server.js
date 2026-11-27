@@ -22,6 +22,76 @@ async function ecb(){
   for(const c of Object.keys(rates))rates[c]=rates[c].slice(first);
   return{source:'ECB euro foreign exchange reference rates (daily, not live quotes)',dates:ds.slice(first),rates};
 }
+
+// ---- Cross-asset prices & 60d correlations (Metals, Indices, Crypto, Crude Oil)
+const YF_ASSETS={
+  XAUUSD:'GC=F',
+  XAGUSD:'SI=F',
+  US30:'^DJI',
+  NAS100:'^NDX',
+  SPX500:'^GSPC',
+  BTCUSD:'BTC-USD',
+  USOIL:'CL=F',
+  UKOIL:'BZ=F',
+  USD:'DX-Y.NYB',
+  CAD:'CAD=X'
+};
+async function yfSeries(ticker){
+  const u=`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=4mo&interval=1d`;
+  const j=JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2));
+  const res=j?.chart?.result?.[0];
+  const ts=res?.timestamp||[],cl=res?.indicators?.quote?.[0]?.close||[];
+  const pts=[];
+  for(let i=0;i<ts.length;i++){
+    if(cl[i]!=null&&!isNaN(cl[i]))pts.push({d:new Date(ts[i]*1000).toISOString().slice(0,10),v:+cl[i]});
+  }
+  if(pts.length<25)throw new Error('insufficient points for '+ticker);
+  return pts;
+}
+function logRets(pts,len=60){
+  const s=pts.slice(-(len+1)),r=[];
+  for(let i=1;i<s.length;i++)r.push(Math.log(s[i].v/s[i-1].v));
+  return r;
+}
+function corrArr(a,b){
+  const n=Math.min(a.length,b.length);
+  if(n<15)return null;
+  const x=a.slice(-n),y=b.slice(-n);
+  const mx=x.reduce((s,v)=>s+v,0)/n,my=y.reduce((s,v)=>s+v,0)/n;
+  let num=0,dx=0,dy=0;
+  for(let i=0;i<n;i++){const vx=x[i]-mx,vy=y[i]-my;num+=vx*vy;dx+=vx*vx;dy+=vy*vy}
+  const den=Math.sqrt(dx*dy);
+  return den?+(num/den).toFixed(2):0;
+}
+async function multiAssets(){
+  const keys=Object.keys(YF_ASSETS),series={},rets={},data={},corr={};
+  const rs=await Promise.allSettled(keys.map(k=>yfSeries(YF_ASSETS[k])));
+  keys.forEach((k,i)=>{
+    if(rs[i].status==='fulfilled'){
+      const pts=rs[i].value;
+      series[k]=pts;
+      rets[k]=logRets(pts,60);
+      const last=pts.at(-1).v,prev1=pts.at(-2)?.v,prev21=pts[Math.max(0,pts.length-22)]?.v;
+      data[k]={
+        price:+last.toFixed(4),
+        date:pts.at(-1).d,
+        d1:prev1?+(last/prev1-1).toFixed(4):null,
+        m1:prev21?+(last/prev21-1).toFixed(4):null
+      };
+    }
+  });
+  // Invert CAD=X (USD/CAD) so CAD represents CAD strength
+  if(rets.CAD)rets.CAD=rets.CAD.map(v=>-v);
+  keys.forEach(a=>{
+    if(!rets[a])return;
+    corr[a]={};
+    keys.forEach(b=>{
+      if(a!==b&&rets[b])corr[a][b]=corrArr(rets[a],rets[b]);
+    });
+  });
+  return{data,corr,updatedAt:Date.now(),source:'Yahoo Finance daily closes (60d rolling log-return correlations)'};
+}
+
 // ---- FRED + BLS
 const FRED={us2y:'DGS2',us5y:'DGS5',us10y:'DGS10',tips10y:'DFII10',usdBroad:'DTWEXBGS',wti:'DCOILWTICO',brent:'DCOILBRENTEU',gold:'GOLDAMGBD228NLBM'};
 async function fred(id,tries){const rows=(await getText('https://fred.stlouisfed.org/graph/fredgraph.csv?id='+id,{},tries)).trim().split(/\r?\n/).slice(1).map(l=>l.split(',')).filter(p=>p[1]&&p[1]!=='.');const a=rows.at(-1),b=rows.at(-2);return{date:a[0],value:+a[1],prev:b?+b[1]:null}}
@@ -43,26 +113,81 @@ async function dashboard(){
   if(Object.values(out.fred).every(v=>!v)&&!out.bls)throw new Error('All upstream sources failed');
   return out;
 }
+
 // ---- News (Google News RSS searches + FXStreet/CNBC/MarketWatch + central-bank feeds). Refreshed every 15 min.
-const Q=[{cat:'Central Banks',q:'"central bank" OR Fed OR ECB OR "Bank of England" OR "Bank of Japan" interest rates'},{cat:'Currencies',q:'forex OR "currency markets" OR "US dollar" OR euro OR yen OR sterling'},{cat:'Macro & Rates',q:'inflation OR CPI OR "nonfarm payrolls" OR "Treasury yields" OR GDP'},{cat:'Macro & Rates',q:'site:reuters.com inflation OR economy OR "interest rates"'},{cat:'Currencies',q:'site:reuters.com forex OR currencies OR dollar'},
- ...[['USD','"US dollar" OR "Federal Reserve" OR "dollar index"'],['EUR','euro OR ECB OR eurozone OR EUR/USD'],['GBP','sterling OR "Bank of England" OR GBP/USD'],['JPY','yen OR "Bank of Japan" OR USD/JPY'],['CHF','"Swiss franc" OR SNB OR "Swiss National Bank"'],['CAD','"Canadian dollar" OR loonie OR "Bank of Canada"'],['AUD','"Australian dollar" OR RBA OR "Reserve Bank of Australia"'],['NZD','"New Zealand dollar" OR RBNZ OR kiwi'],['XAUUSD','gold price OR XAUUSD OR bullion'],['XAGUSD','silver price OR XAGUSD']].map(([tag,q])=>({cat:'Top Stories',tag,q}))];
+const Q=[
+  {cat:'Central Banks',q:'"central bank" OR Fed OR ECB OR "Bank of England" OR "Bank of Japan" interest rates'},
+  {cat:'Currencies',q:'forex OR "currency markets" OR "US dollar" OR euro OR yen OR sterling'},
+  {cat:'Macro & Rates',q:'inflation OR CPI OR "nonfarm payrolls" OR "Treasury yields" OR GDP'},
+  {cat:'Macro & Rates',q:'site:reuters.com inflation OR economy OR "interest rates"'},
+  {cat:'Currencies',q:'site:reuters.com forex OR currencies OR dollar'},
+  ...[
+    ['USD','"US dollar" OR "Federal Reserve" OR "dollar index"'],
+    ['EUR','euro OR ECB OR eurozone OR EUR/USD'],
+    ['GBP','sterling OR "Bank of England" OR GBP/USD'],
+    ['JPY','yen OR "Bank of Japan" OR USD/JPY'],
+    ['CHF','"Swiss franc" OR SNB OR "Swiss National Bank"'],
+    ['CAD','"Canadian dollar" OR loonie OR "Bank of Canada"'],
+    ['AUD','"Australian dollar" OR RBA OR "Reserve Bank of Australia"'],
+    ['NZD','"New Zealand dollar" OR RBNZ OR kiwi'],
+    ['XAUUSD','gold price OR XAUUSD OR bullion'],
+    ['XAGUSD','silver price OR XAGUSD'],
+    ['US30','Dow Jones OR US30 OR DJIA'],
+    ['NAS100','Nasdaq 100 OR NAS100 OR NDX tech stocks'],
+    ['SPX500','S&P 500 OR SPX500 OR Wall Street'],
+    ['BTCUSD','bitcoin OR BTCUSD OR crypto market'],
+    ['USOIL','WTI crude oil OR USOIL OR OPEC oil price'],
+    ['UKOIL','Brent crude oil OR UKOIL']
+  ].map(([tag,q])=>({cat:'Top Stories',tag,q}))
+];
 const UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const YF=q=>`https://feeds.finance.yahoo.com/rss/2.0/headline?s=${q}&region=US&lang=en-US`;
-const DIRECT=[['https://www.fxstreet.com/rss/news','FXStreet','Top Stories'],['https://www.fxempire.com/api/v1/en/articles/rss/news','FXEmpire','Top Stories'],['https://www.investing.com/rss/news_1.rss','Investing.com','Top Stories'],['https://www.investing.com/rss/news_11.rss','Investing.com','Top Stories'],['https://www.dailyfx.com/feeds/market-news','DailyFX','Top Stories'],[YF('GC=F'),'Yahoo Finance','Top Stories','XAUUSD'],[YF('SI=F'),'Yahoo Finance','Top Stories','XAGUSD'],[YF('EURUSD=X,GBPUSD=X,JPY=X,CHF=X,CAD=X,AUDUSD=X,NZDUSD=X'),'Yahoo Finance','Top Stories'],['https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664','CNBC',null],['https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258','CNBC',null],['https://feeds.content.dowjones.io/public/rss/mw_marketpulse','MarketWatch',null],['https://feeds.content.dowjones.io/public/rss/mw_topstories','MarketWatch',null]];
+const DIRECT=[
+  ['https://www.fxstreet.com/rss/news','FXStreet','Top Stories'],
+  ['https://www.fxempire.com/api/v1/en/articles/rss/news','FXEmpire','Top Stories'],
+  ['https://www.investing.com/rss/news_1.rss','Investing.com','Top Stories'],
+  ['https://www.investing.com/rss/news_11.rss','Investing.com','Top Stories'],
+  ['https://www.dailyfx.com/feeds/market-news','DailyFX','Top Stories'],
+  [YF('GC=F'),'Yahoo Finance','Top Stories','XAUUSD'],
+  [YF('SI=F'),'Yahoo Finance','Top Stories','XAGUSD'],
+  [YF('^DJI,^NDX,^GSPC'),'Yahoo Finance','Top Stories','NAS100'],
+  [YF('BTC-USD'),'Yahoo Finance','Top Stories','BTCUSD'],
+  [YF('CL=F,BZ=F'),'Yahoo Finance','Top Stories','USOIL'],
+  [YF('EURUSD=X,GBPUSD=X,JPY=X,CHF=X,CAD=X,AUDUSD=X,NZDUSD=X'),'Yahoo Finance','Top Stories'],
+  ['https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664','CNBC',null],
+  ['https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258','CNBC',null],
+  ['https://feeds.content.dowjones.io/public/rss/mw_marketpulse','MarketWatch',null],
+  ['https://feeds.content.dowjones.io/public/rss/mw_topstories','MarketWatch',null]
+];
 const FEEDS=[['USD','https://www.federalreserve.gov/feeds/press_all.xml','Federal Reserve'],['EUR','https://www.ecb.europa.eu/rss/press.html','ECB'],['GBP','https://www.bankofengland.co.uk/rss/news','Bank of England'],['JPY','https://www.boj.or.jp/en/rss/whatsnew.xml','Bank of Japan'],['CHF','https://www.snb.ch/public/en/rss/pressrel','SNB'],['CAD','https://www.bankofcanada.ca/content_type/press-releases/feed/','Bank of Canada'],['AUD','https://www.rba.gov.au/rss/rss-cb-media-releases.xml','RBA'],['NZD','https://www.rbnz.govt.nz/feeds/news','RBNZ']];
-const DRV_HI=[['Intervention',/interven(e|tion)|emergency (rate|meeting|cut|hike)/i],['Rate decision',/rate decision|rate (hike|cut)s?|\b(raises?|cuts?|holds?|lifts?|slashes|keeps|leaves|hikes?) (its |the )?(key |benchmark |policy |interest |cash )?rates?\b|interest[- ]rate (decision|announcement)|policy rate|monetary policy (decision|meeting|statement)|\bfomc\b|\bmpc\b|rba board|official cash rate|\bocr\b/i],['Central bank speech',/\b(fed|federal reserve|ecb|boe|bank of england|boj|bank of japan|rba|reserve bank|rbnz|boc|bank of canada|snb|swiss national bank)\b.*\b(says?|said|signals?|warns?|hints?|flags?|speech|testimony|remarks|statement|minutes|chair|governor)\b|\b(powell|lagarde|bailey|ueda|macklem|bullock|schlegel|breman)\b/i],['CPI / inflation',/\bcpi\b|\bpce\b|inflation|consumer prices?|producer prices?|\bppi\b/i],['GDP',/\bgdp\b|gross domestic product/i],['NFP / jobs',/non-?farm|\bnfp\b|payrolls?|unemployment|jobless (rate|claims)|jobs report|employment (data|report|change)|labou?r market/i]];
+const DRV_HI=[['Intervention',/interven(e|tion)|emergency (rate|meeting|cut|hike)/i],['Rate decision',/rate decision|rate (hike|cut)s?|\b(raises?|cuts?|holds?|lifts?|slashes|keeps|leaves|hikes?) (its |the )?(key |benchmark |policy |interest |cash )?rates?\b|interest[- ]rate (decision|announcement)|policy rate|monetary policy (decision|meeting|statement)|\bfomc\b|\bmpc\b|rba board|official cash rate|\bocr\b/i],['Central bank speech',/\b(fed|federal reserve|ecb|boe|bank of england|boj|bank of japan|rba|reserve bank|rbnz|boc|bank of canada|snb|swiss national bank)\b.*\b(says?|said|signals?|warns?|hints?|flags?|speech|testimony|remarks|statement|minutes|chair|governor)\b|\b(powell|lagarde|bailey|ueda|macklem|bullock|schlegel|breman)\b/i],['CPI / inflation',/\bcpi\b|\bpce\b|inflation|consumer prices?|producer prices?|\bppi\b/i],['GDP',/\bgdp\b|gross domestic product/i],['NFP / jobs',/non-?farm|\bnfp\b|payrolls?|unemployment|jobless (rate|claims)|jobs report|employment (data|report|change)|labou?r market/i],['OPEC / Inventories',/\b(opec|opec\+|eia|crude inventories|oil stockpiles)\b/i]];
 const DRV_MED=[['Rate expectations',/(rate[- ])?(cut|hike)s? (bets|expectations|odds|hopes)|rate expectations|pricing in|fed funds futures/i],['PMI',/\bpmi\b|purchasing managers/i],['Retail sales',/retail sales/i],['Trade balance',/trade (balance|deficit|surplus|gap)|current account/i],['Consumer confidence',/(consumer|business) (confidence|sentiment)|\bzew\b|\bifo\b|michigan/i],['Bond yields',/\byields?\b|treasur(y|ies)|\bgilts?\b|\bbunds?\b|\bjgbs?\b|bond (market|sell-?off|rally)/i],['Analyst forecast',/forecast|outlook|predict|analysts?|strategists?|price target|projection/i],['Market sentiment',/risk (appetite|sentiment|aversion)|risk-(on|off)|safe[- ]haven|market sentiment|volatility|\bvix\b/i]];
 const driverOf=t=>{for(const[n,r]of DRV_HI)if(r.test(t))return[n,'HIGH'];for(const[n,r]of DRV_MED)if(r.test(t))return[n,'MEDIUM'];return[null,'LOW']};
 
-
-const triage=t=>driverOf(t)[1];
 const tone=t=>{const h=/hike|raises? (interest )?rates?|hawkish|higher for longer|hotter|accelerat|\bbeats?\b/i.test(t),d=/\bcuts?\b|dovish|\beases?\b|easing|cools?|slows?|\bmiss(es)?\b/i.test(t);return h&&!d?'Hawkish':d&&!h?'Dovish':'Neutral'};
 const move=t=>{const u=/\b(rall(y|ies|ied)|surg\w*|jump\w*|climb\w*|gains?|rises?|rose|record high|soar\w*|strengthen\w*|firms?|advances?|rebound\w*|higher)\b/i.test(t),d=/\b(falls?|fell|drops?|dropped|slump\w*|slid\w*|slides|declin\w*|tumbl\w*|sinks?|weaken\w*|lower|loses|losses|plung\w*|slips?|retreats?)\b/i.test(t);return u&&!d?'Up':d&&!u?'Down':'Flat'};
 
-const SPORT=/\b(football|soccer|cricket|premier league|champions league|onefootball|nfl|nba|mlb|nhl|la liga|serie a|bundesliga|touchdown|quarterback)\b/i,AMBIG=/\b(match(es)?|goals?|transfers?)\b/i,FIN=/\b(forex|fx|currency|currencies|rates?|inflation|cpi|gdp|fed|ecb|boe|boj|snb|rba|yields?|treasur\w*|central bank|bonds?|gold|silver|dollar|euro|yen|sterling|payrolls?|econom\w*|markets?)\b/i;
+const SPORT=/\b(football|soccer|cricket|premier league|champions league|onefootball|nfl|nba|mlb|nhl|la liga|serie a|bundesliga|touchdown|quarterback)\b/i,AMBIG=/\b(match(es)?|goals?|transfers?)\b/i,FIN=/\b(forex|fx|currency|currencies|rates?|inflation|cpi|gdp|fed|ecb|boe|boj|snb|rba|yields?|treasur\w*|central bank|bonds?|gold|silver|dollar|euro|yen|sterling|payrolls?|econom\w*|markets?|nasdaq|dow|s&p|bitcoin|crypto|oil|wti|brent|opec)\b/i;
 const noise=(t,sm='')=>SPORT.test(t+' '+sm)||(AMBIG.test(t)&&!FIN.test(t));
-const CURX={USD:/\b(usd|u\.?s\.? dollar|dollar index|greenback|fed\b|federal reserve|fomc|powell|treasur)|(?<!canadian |australian |new zealand |hong kong )\bdollar\b/i,EUR:/\b(eur\b|euro\b|ecb|lagarde|eurozone)/i,GBP:/\b(gbp|sterling|pound|boe\b|bank of england|bailey)/i,JPY:/\b(jpy|yen|boj\b|bank of japan|ueda)/i,CHF:/\b(chf|franc|snb\b|swiss)/i,CAD:/\b(cad\b|loonie|bank of canada|canadian)/i,AUD:/\b(aud\b|aussie|rba\b|australia)/i,NZD:/\b(nzd|kiwi|rbnz|new zealand)/i,XAUUSD:/\b(gold|bullion|xau|xauusd)\b/i,XAGUSD:/\b(silver|xag|xagusd)\b/i};
-const detectCur=t=>Object.keys(CURX).filter(c=>CURX[c].test(t)).slice(0,5);
+const CURX={
+  USD:/\b(usd|u\.?s\.? dollar|dollar index|greenback|fed\b|federal reserve|fomc|powell|treasur)|(?<!canadian |australian |new zealand |hong kong )\bdollar\b/i,
+  EUR:/\b(eur\b|euro\b|ecb|lagarde|eurozone)/i,
+  GBP:/\b(gbp|sterling|pound|boe\b|bank of england|bailey)/i,
+  JPY:/\b(jpy|yen|boj\b|bank of japan|ueda)/i,
+  CHF:/\b(chf|franc|snb\b|swiss)/i,
+  CAD:/\b(cad\b|loonie|bank of canada|canadian)/i,
+  AUD:/\b(aud\b|aussie|rba\b|australia)/i,
+  NZD:/\b(nzd|kiwi|rbnz|new zealand)/i,
+  XAUUSD:/\b(gold|bullion|xau|xauusd)\b/i,
+  XAGUSD:/\b(silver|xag|xagusd)\b/i,
+  US30:/\b(dow|dow jones|us30|djia|dj30)\b/i,
+  NAS100:/\b(nasdaq|nas100|ndx|ustec|tech stocks)\b/i,
+  SPX500:/\b(s&p 500|s&p|spx500|spx|us500|wall street)\b/i,
+  BTCUSD:/\b(bitcoin|btc|btcusd|crypto|cryptocurrency)\b/i,
+  USOIL:/\b(wti|usoil|crude oil|oil prices?|opec)\b/i,
+  UKOIL:/\b(brent|ukoil|north sea oil)\b/i
+};
+const detectCur=t=>Object.keys(CURX).filter(c=>CURX[c].test(t)).slice(0,6);
 const classify=t=>/central bank|\bfed\b|fomc|\becb\b|\bboe\b|\bboj\b|\bsnb\b|\brba\b|rbnz|rate (cut|hike|decision)|powell|lagarde|bailey|ueda|monetary policy/i.test(t)?'Central Banks':/inflation|\bcpi\b|\bgdp\b|payroll|yield|treasur|jobs report|unemployment|\bpmi\b|retail sales|recession/i.test(t)?'Macro & Rates':/forex|\bfx\b|dollar|\beuro\b|\byen\b|sterling|\bpound\b|franc|loonie|aussie|kiwi|currenc/i.test(t)?'Currencies':'Top Stories';
 const dec=s=>s.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&nbsp;/g,' ');
 const summ=(d,t)=>{const x=dec((d||'').replace(/<[^>]+>/g,' ')).replace(/\s+/g,' ').trim();return x&&!x.toLowerCase().startsWith(t.replace(/ - [^-]+$/,'').toLowerCase().slice(0,30))?x.slice(0,500):''};
@@ -76,7 +201,6 @@ const META=['og:image:secure_url','og:image','twitter:image','twitter:image:src'
 function pickMeta(t){for(const k of META){const m=t.match(new RegExp(`<meta[^>]+(?:property|name)=["']${k}["'][^>]*content=["']([^"']+)["']`,'i'))||t.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${k}["']`,'i'));if(m){const u=fix(dec(m[1]));if(u&&!/logo|favicon|placeholder/i.test(u))return u}}return null}
 async function head(r){let s='';const rd=r.body.getReader(),d=new TextDecoder();while(s.length<250000){const{done,value}=await rd.read();if(done)break;s+=d.decode(value,{stream:true})}rd.cancel().catch(()=>{});return s}
 async function ogImage(u){try{const r=await fetch(u,{headers:{'User-Agent':UA,Accept:'text/html,application/xhtml+xml'},redirect:'follow',signal:AbortSignal.timeout(6000)});return pickMeta(await head(r))}catch{return null}}
-// Google News article links -> publisher URL. Old tokens are base64 URLs; new ones need Google's batchexecute endpoint.
 const gnId=l=>(l.match(/news\.google\.com\/(?:rss\/)?articles\/([^?#]+)/)||[])[1];
 function legacyDecode(id){let b=Buffer.from(id.replace(/-/g,'+').replace(/_/g,'/'),'base64');if(b[0]===8&&b[1]===0x13&&b[2]===0x22)b=b.subarray(3);if(b.length>3&&b[b.length-3]===0xd2&&b[b.length-2]===1&&b[b.length-1]===0)b=b.subarray(0,-3);const len=b[0],u=(len>=0x80?b.subarray(2,len+1):b.subarray(1,len+1)).toString('latin1');return/^https?:\/\//.test(u)?u:null}
 async function gnResolve(id){
@@ -105,13 +229,14 @@ async function pollNews(){
       if(ex){tags.forEach(t=>{if(!ex.cur.includes(t))ex.cur.push(t)});if(!ex.img&&it.img)ex.img=it.img;continue}
       const[driver,impact]=driverOf(it.title),o={id,...it,category:cat,cur:tags,impact,driver,tone:tone(text),move:move(it.title)};idx.set(id,o);fresh.push(o)}}
   lastPoll=new Date().toISOString();
-  if(fresh.length){news=[...fresh,...news].sort((a,b)=>b.time.localeCompare(a.time)).slice(0,400);
+  if(fresh.length){news=[...fresh,...news].sort((a,b)=>b.time.localeCompare(a.time)).slice(0,450);
     if(idx.size>3000){idx.clear();news.forEach(n=>idx.set(n.id,n))}
     const msg=`event: news\ndata: ${JSON.stringify(fresh.map(present))}\n\n`;clients.forEach(c=>c.write(msg))}
-  enrich(fresh).catch(()=>{}); // resolves Google links + fetches og:image in the background; items update in place
+  enrich(fresh).catch(()=>{});
 }
 const loop=()=>pollNews().catch(()=>{}).finally(()=>setTimeout(loop,9e5));const firstPoll=loop();
-// ---- Fundamentals (auto). Every metric has a chain of sources tried in order; first fresh one wins. Missing = null, never estimated.
+
+// ---- Fundamentals (auto)
 const BIS={USD:'US',EUR:'XM',GBP:'GB',JPY:'JP',CHF:'CH',CAD:'CA',AUD:'AU',NZD:'NZ'};
 const CCs={USD:['US'],EUR:['EZ','EA19'],GBP:['GB'],JPY:['JP'],CHF:['CH'],CAD:['CA'],AUD:['AU'],NZD:['NZ']};
 const I3={USD:'USA',GBP:'GBR',JPY:'JPN',CHF:'CHE',CAD:'CAN',AUD:'AUS',NZD:'NZL'},FQ={AUD:'Q',NZD:'Q'},MON='Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' '),MONI={};'JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC'.split(' ').forEach((m,i)=>MONI[m]=String(i+1).padStart(2,'0'));
@@ -150,7 +275,6 @@ async function oecdCpi(area,freq){const t=await memo(`oecd${area}${freq}`,216e5,
 const TEN={USD:'united states',EUR:'euro area',GBP:'united kingdom',JPY:'japan',CHF:'switzerland',CAD:'canada',AUD:'australia',NZD:'new zealand'},TEC={rate:/^interest rate$/i,cpi:/^inflation rate$/i,gdp:/^gdp annual growth rate$/i,unemp:/^unemployment rate$/i};
 async function te(c,m){const j=await memo('te'+c,216e5,async()=>JSON.parse(await getText(`https://api.tradingeconomics.com/country/${encodeURIComponent(TEN[c])}?c=guest:guest&f=json`,{headers:{'User-Agent':UA}},1))),r=Array.isArray(j)&&j.find(x=>TEC[m].test(x.Category||x.Title||''));if(!r||r.LatestValue==null||!r.LatestValueDate)throw new Error('not available on TE guest tier');return[[String(r.LatestValueDate).slice(0,10),+r.LatestValue]]}
 const age=p=>(Date.now()-new Date(p.at(-1)[0]))/864e5;
-// Walk the chain: first source whose latest observation is current wins; otherwise keep the most recent seen (flagged stale). IMF annual estimates are only a last resort.
 async function pick(chain,diag,label,maxAge){
   let best=null,imfR=null;
   for(const[src,fn]of chain){try{let p=await fn();if(!p?.length){diag.push(`${label} ${src}: empty`);continue}p=[...p].sort((a,b)=>a[0].localeCompare(b[0]));
@@ -185,7 +309,8 @@ async function fundamentals(){
   const missing=[];cur.forEach(c=>MS.forEach(m=>{if(!data[c][m])missing.push(c+'.'+m)}));
   return{data,updatedAt:now,missing,errors:{detail:[...new Set(diag)]},sources:'Official feeds first (Fed/FRED, ECB, BoE, BoC, RBA, StatCan, ONS, Eurostat), then BIS/OECD/TradingEconomics guest; IMF annual estimates only as a last resort.'}}
 setTimeout(()=>cached('f',18e5,fundamentals).catch(()=>{}),4000);
-setInterval(()=>cached('f',0,fundamentals,true).catch(()=>{}),18e5); // auto-pick-up of new releases every 30 min
+setInterval(()=>cached('f',0,fundamentals,true).catch(()=>{}),18e5);
+
 // ---- Economic calendar (Forex Factory public feed via faireconomy.media) + CFTC COT
 const CAL_THIS=['https://nfs.faireconomy.media/ff_calendar_thisweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_thisweek.json'],CAL_NEXT=['https://nfs.faireconomy.media/ff_calendar_nextweek.json','https://cdn-nfs.faireconomy.media/ff_calendar_nextweek.json'],MAJ=['USD','EUR','GBP','JPY','CHF','CAD','AUD','NZD'];
 async function firstJson(urls){let e;for(const u of urls){try{return JSON.parse(await getText(u,{headers:{'User-Agent':UA}},2))}catch(x){e=x}}throw e}
@@ -211,6 +336,7 @@ async function cot(){
     data[k]={date:String(r.report_date_as_yyyy_mm_dd).slice(0,10),long:L,short:S,net:L-S,change:isNaN(ch)?null:ch,oi:isNaN(oi)?null:oi,market:r.market_and_exchange_names||null}}
   if(!Object.keys(data).length)throw new Error('CFTC fields not recognised');
   return{data,missing:Object.keys(COT_MK).filter(k=>!data[k]),source:'CFTC Commitments of Traders (futures only). Net = non-commercial long − short; weekly change vs prior report. USD = ICE US Dollar Index. Published Fridays for Tuesday positions.'}}
+
 // ---- HTTP
 const send=(res,code,body,type='application/json')=>{res.writeHead(code,{'Content-Type':type});res.end(typeof body==='string'?body:JSON.stringify(body))};
 http.createServer(async(req,res)=>{
@@ -224,6 +350,7 @@ http.createServer(async(req,res)=>{
   try{
     if(p==='/api/health')return send(res,200,{ok:true,uptime:process.uptime(),time:new Date().toISOString()});
     if(p==='/api/history')return send(res,200,await cached('h',36e5,ecb));
+    if(p==='/api/assets')return send(res,200,await cached('assets',18e5,multiAssets,force));
     if(p==='/api/dashboard')return send(res,200,await cached('d',3e5,dashboard));
     if(p==='/api/fundamentals')return send(res,200,await cached('f',18e5,fundamentals,force));
     if(p==='/api/calendar')return send(res,200,await cached('c',18e5,calendar,force));
