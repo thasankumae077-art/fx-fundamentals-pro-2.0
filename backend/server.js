@@ -563,20 +563,7 @@ http.createServer(async(req,res)=>{
   res.setHeader('Strict-Transport-Security','max-age=15552000');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'unsafe-inline'");res.setHeader('Cross-Origin-Resource-Policy','same-site');
   if(o&&ORIGINS.includes(o)){res.setHeader('Access-Control-Allow-Origin',o);res.setHeader('Vary','Origin')}
   if(req.method==='OPTIONS'){res.writeHead(204);return res.end()}
-  if(req.method==='POST'&&new URL(req.url,'http://x').pathname==='/api/calendar/seed'){
-  let body='';req.on('data',c=>body+=c);
-  req.on('end',()=>{try{
-    const raw=JSON.parse(body);const arr=Array.isArray(raw)?raw:(Array.isArray(raw.items)?raw.items:[]);
-    const items=arr.map(e=>({title:String(e.title||'').trim(),currency:String(e.country||e.currency||'').trim().toUpperCase(),impact:String(e.impact||'Medium').trim(),timestamp:e.date?new Date(e.date).toISOString():e.timestamp,forecast:e.forecast||null,previous:e.previous||null,actual:null,actualSource:null,detail:null})).filter(e=>e.title&&e.currency&&e.timestamp);
-    if(!items.length)return send(res,400,{error:'No valid FF events'});
-    const locked={ffLocked:true,fetchedAt:Date.now(),items};
-    calendar.ffScheduleCache=locked;
-    try{fs.writeFileSync('/tmp/ff_schedule.json',JSON.stringify(locked));}catch{}
-    delete cache.c;delete cache.d;delete cache.f;
-    return send(res,200,{ok:true,ffLocked:true,count:items.length});
-  }catch(err){return send(res,400,{error:String(err.message||err)});}});
-  return;
-}
+  
 if(req.method!=='GET')return send(res,405,{error:'Method not allowed'});
 
   const U=new URL(req.url,'http://x'),p=U.pathname,force=U.searchParams.get('force')==='1';
@@ -586,7 +573,11 @@ if(req.method!=='GET')return send(res,405,{error:'Method not allowed'});
     if(p==='/api/assets')return send(res,200,await cached('assets',18e5,multiAssets,force));
     if(p==='/api/dashboard')return send(res,200,await cached('d',3e5,dashboard));
     if(p==='/api/fundamentals')return send(res,200,await cached('f',18e5,fundamentals,force));
-    if(p==='/api/calendar')return send(res,200,await cached('c',12e4,calendar,force));
+    if(p==='/api/calendar'){
+      const range=parseCalRange(U.searchParams.get('from'),U.searchParams.get('to'));
+      const ttl=range.isFutureOnly?300000:120000;
+      return send(res,200,await cached(range.cacheKey,ttl,()=>calendar(range),force));
+    }
     if(p==='/api/cot')return send(res,200,await cached('cot',432e5,cot));
     if(p==='/api/news'){if(!news.length)await firstPoll.catch(()=>{});return send(res,200,{items:news.filter(n=>!noise(n.title,n.summary)).map(present),lastPoll,cacheSeconds:900})}
     if(p==='/api/news/status')return send(res,200,{count:news.length,high:news.filter(n=>n.impact==='HIGH').length,lastPoll,clients:clients.size});
