@@ -700,7 +700,7 @@ http.createServer(async(req,res)=>{
     const locked={ffLocked:true,fetchedAt:Date.now(),items};
     calendar.ffScheduleCache=locked;
     try{fs.writeFileSync('/tmp/ff_schedule.json',JSON.stringify(locked));}catch{}
-    cache.delete('c');cache.delete('d');cache.delete('f');
+    delete cache.c;delete cache.d;delete cache.f;
     return send(res,200,{ok:true,ffLocked:true,count:items.length});
   }catch(err){return send(res,400,{error:String(err.message||err)});}});
   return;
