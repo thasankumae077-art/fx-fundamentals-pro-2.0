@@ -4995,6 +4995,7 @@ export default function App() {
         unemp: d.unemp?.value ?? null,
         guidance: d.centralBank?.guidance || null,
         nextMtgBps: d.centralBank?.impliedNextMeetingBps ?? null,
+        nextMeeting: d.centralBank?.nextMeeting ? `${d.centralBank.nextMeeting.date} ${d.centralBank.nextMeeting.timeIst} IST (${d.centralBank.nextMeeting.daysAway}d)` : null,
         mom30d: intel?.macroMomentum?.[c]?.direction || null
       };
     });
