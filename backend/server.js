@@ -2169,6 +2169,13 @@ async function ecbDfr() {
   if (!o.length) throw new Error('ECB DFR empty');
   return o;
 }
+async function ecbYield(tenor = '10Y') {
+  const t = await getText(`https://data-api.ecb.europa.eu/service/data/YC/B.U2.EUR.4F.G_N_A.SV_C_YM.SR_${tenor}?format=csvdata&startPeriod=${ago(120).toISOString().slice(0, 10)}`, {}, 2);
+  const L = t.trim().split(/\r?\n/), h = L[0].split(','), ti = h.indexOf('TIME_PERIOD'), vi = h.indexOf('OBS_VALUE');
+  const o = L.slice(1).map(l => l.split(',')).map(p => [p[ti], +p[vi]]).filter(p => !isNaN(p[1]));
+  if (!o.length) throw new Error(`ECB YC ${tenor} empty`);
+  return o;
+}
 async function ons(pStr) {
   const j = JSON.parse(await getText(`https://www.ons.gov.uk/${pStr}/data`, {}, 2));
   const o = (j.months || []).map(m => {
@@ -2255,10 +2262,10 @@ async function statcan(vec, n = 18) {
   if (!p?.length) throw new Error('StatCan empty');
   return p.map(x => [x.refPer, +x.value]).filter(x => !isNaN(x[1]));
 }
-async function oecdCpi(area, freq) {
-  const t = await memo(`oecd_${area}_${freq}`, 216e5, () => getText(
-    `https://sdmx.oecd.org/public/rest/data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/${area}.${freq}.N.CPI.PA._T.N.GY?startPeriod=${new Date().getFullYear() - 2}&dimensionAtObservation=AllDimensions&format=csvfilewithlabels`,
-    { headers: { 'User-Agent': UA } }, 1
+async function oecdCpi(area, freq, measure = '_T') {
+  const t = await memo(`oecd_${area}_${freq}_${measure}`, 216e5, () => getText(
+    `https://sdmx.oecd.org/public/rest/data/OECD.SDD.TPS,DSD_PRICES@DF_PRICES_ALL,1.0/${area}.${freq}.N.CPI.PA.${measure}.N.GY?startPeriod=${new Date().getFullYear() - 2}&dimensionAtObservation=AllDimensions&format=csvfilewithlabels`,
+    { headers: { 'User-Agent': UA } }, 2
   ));
   const L = t.trim().split(/\r?\n/), h = csvRow(L[0]), ti = h.indexOf('TIME_PERIOD'), vi = h.indexOf('OBS_VALUE');
   if (ti < 0 || vi < 0) throw new Error('OECD bad cols');
@@ -2273,7 +2280,14 @@ async function te(c, m) {
   return [[String(r.LatestValueDate).slice(0, 10), +r.LatestValue]];
 }
 
-const ptsAgeDays = p => (Date.now() - new Date(p.at(-1)[0]).getTime()) / DAY_MS;
+const ptsAgeDays = (p, freq = 'monthly') => {
+  const d = p.at(-1)[0];
+  const y = Number(d.slice(0, 4)), m = Number(d.slice(5, 7));
+  const ms = (freq === 'monthly' || freq === 'quarterly') && y && m
+    ? Date.UTC(y, freq === 'quarterly' ? Math.ceil(m / 3) * 3 : m, 0)
+    : new Date(d).getTime();
+  return Math.max(0, (Date.now() - ms) / DAY_MS);
+};
 
 async function pickSeries(chain, diag, label, maxFreshAge) {
   let best = null, imfR = null;
@@ -2297,6 +2311,7 @@ const EU = (ds, q) => () => eurostat(ds, q);
 const UNQ = g => `geo=${g}&s_adj=SA&age=TOTAL&sex=T&unit=PC_ACT`;
 const GDQ = g => `geo=${g}&unit=CLV_PCH_SM&s_adj=SCA&na_item=B1GQ`;
 const CPQ = (g, coicop = 'CP00') => `geo=${g}&coicop=${coicop}&unit=RCH_A`;
+const CPQ2 = (g, coicop18 = 'TOTAL') => `geo=${g}&coicop18=${coicop18}&unit=RCH_A`;
 const EAG = ['EA', 'EA20', 'EA21'];
 
 const PRI = {
@@ -2309,20 +2324,23 @@ const PRI = {
   },
   cpi: {
     USD: [['FRED CPIAUCSL (y/y)', async () => calcYoYSeries(await fredPts('CPIAUCSL', 1))]],
-    EUR: EAG.map(g => [`Eurostat HICP ${g}`, EU('prc_hicp_manr', CPQ(g))]),
-    GBP: [['ONS CPI D7G7', () => ons('economy/inflationandpriceindices/timeseries/d7g7/mm23')], ['Eurostat HICP UK', EU('prc_hicp_manr', CPQ('UK'))]],
+    EUR: [...EAG.map(g => [`Eurostat HICP ${g}`, EU('prc_hicp_minr', CPQ2(g, 'TOTAL'))]), ...EAG.map(g => [`Eurostat HICP ${g} (legacy)`, EU('prc_hicp_manr', CPQ(g))])],
+    GBP: [['ONS CPI D7G7', () => ons('economy/inflationandpriceindices/timeseries/d7g7/mm23')], ['Eurostat HICP UK', EU('prc_hicp_minr', CPQ2('UK', 'TOTAL'))]],
     JPY: [['OECD CPI JPN (monthly)', () => oecdCpi('JPN', 'M')]],
-    CHF: [['Eurostat HICP CH', EU('prc_hicp_manr', CPQ('CH'))], ['OECD CPI CHE (monthly)', () => oecdCpi('CHE', 'M')]],
+    CHF: [['Eurostat HICP CH', EU('prc_hicp_minr', CPQ2('CH', 'TOTAL'))], ['OECD CPI CHE (monthly)', () => oecdCpi('CHE', 'M')]],
     CAD: [['StatCan CPI v41690973 (y/y)', async () => calcYoYSeries(await statcan(41690973, 18))], ['BoC CPI index (y/y)', async () => calcYoYSeries(await boc('V41690973'))]],
     AUD: [['RBA G1 year-ended CPI (quarterly)', () => rbaCsv('g1', 'GCPIAGYP', /all groups.*(year|annual)/i)], ['OECD CPI AUS (quarterly)', () => oecdCpi('AUS', 'Q')]],
-    NZD: [['OECD CPI NZL (quarterly)', () => oecdCpi('NZL', 'Q')]]
+    NZD: [['OECD CPI NZL (quarterly)', () => oecdCpi('NZL', 'Q', '_T')]]
   },
   coreCpi: {
     USD: [['FRED CPILFESL Core CPI (y/y)', async () => calcYoYSeries(await fredPts('CPILFESL', 1))]],
-    EUR: EAG.map(g => [`Eurostat Core HICP ${g}`, EU('prc_hicp_manr', CPQ(g, 'TOT_X_NRG_FOOD'))]),
+    EUR: [...EAG.map(g => [`Eurostat Core HICP ${g}`, EU('prc_hicp_minr', CPQ2(g, 'TOT_X_NRG_FOOD'))]), ...EAG.map(g => [`Eurostat Core HICP ${g} (legacy)`, EU('prc_hicp_manr', CPQ(g, 'TOT_X_NRG_FOOD'))])],
     GBP: [['ONS Core CPI DKO8', () => ons('economy/inflationandpriceindices/timeseries/dko8/mm23')]],
-    AUD: [['RBA G1 Trimmed Mean CPI', () => rbaCsv('g1', 'GCPIAGSAQP', /trimmed mean.*(year|annual)/i)]],
-    CAD: [['BoC CPI-Trim V108785715', () => boc('CPI_TRIM')]]
+    JPY: [['OECD Core CPI JPN (monthly)', () => oecdCpi('JPN', 'M', '_TXCP01_NRG')]],
+    CHF: [['Eurostat Core HICP CH', EU('prc_hicp_minr', CPQ2('CH', 'TOT_X_NRG_FOOD'))], ['OECD Core CPI CHE', () => oecdCpi('CHE', 'M', '_TXCP01_NRG')]],
+    AUD: [['RBA G1 Trimmed Mean CPI', () => rbaCsv('g1', 'GCPIAGSAQP', /trimmed mean.*(year|annual)/i)], ['OECD Core CPI AUS', () => oecdCpi('AUS', 'Q', '_TXCP01_NRG')]],
+    CAD: [['BoC CPI-Trim V108785715', () => boc('CPI_TRIM')], ['OECD Core CPI CAN', () => oecdCpi('CAN', 'M', '_TXCP01_NRG')]],
+    NZD: [['OECD Core CPI NZL (quarterly)', () => oecdCpi('NZL', 'Q', '_TXCP01_NRG')]]
   },
   unemp: {
     USD: [['FRED UNRATE', () => fredPts('UNRATE', 1)], ['Eurostat une_rt_m US', EU('une_rt_m', UNQ('US'))]],
@@ -2359,9 +2377,14 @@ const TAIL = {
       ['IMF WEO annual estimate', () => imf('PCPIPCH', IMFC[c])]
     ];
   },
-  coreCpi: c => [
-    ...CCs[c].map(k => [`OECD Core CPI ${k}`, () => fredPts(`CPGRLE01${k}M659N`, 1)])
-  ],
+    coreCpi: c => {
+    const f = FQ[c] || 'M';
+    return [
+      ...(I3[c] ? [[`OECD Core CPI ${I3[c]}`, () => oecdCpi(I3[c], f, '_TXCP01_NRG')]] : []),
+      ...CCs[c].map(k => [`OECD Core CPI ${k}`, () => fredPts(`CPGRLE01${k}${f}659N`, 1)])
+    ];
+  },
+
   unemp: c => [
     ['TradingEconomics (guest)', () => te(c, 'unemp')],
     ...CCs[c].flatMap(k => ['M', 'Q'].flatMap(f => [['LRHUTTTT', '156S'], ['LRUNTTTT', '156S']].map(([p, x]) => [`OECD ${p}${k}${f}`, () => fredPts(`${p}${k}${f}${x}`, 1)]))),
@@ -2629,8 +2652,12 @@ async function fundamentals(force = false) {
       pickSeries([...(PRI.gdp[c] || []), ...TAIL.gdp(c)], diag, `${c} gdp`, 105),
       pickSeries([...(PRI.unemp[c] || []), ...TAIL.unemp(c)], diag, `${c} unemp`, isQtrMetric('unemp', c) ? 105 : 45),
       pickSeries([...(PRI.coreCpi[c] || []), ...TAIL.coreCpi(c)], diag, `${c} coreCpi`, isQtrMetric('coreCpi', c) ? 105 : 45),
-      fredPts(YIELD10_FRED[c], 1).then(pts => ({ pts, src: `FRED ${YIELD10_FRED[c]}` })).catch(() => null),
-      fredPts(SHORT_RATE_FRED[c], 1).then(pts => ({ pts, src: `FRED ${SHORT_RATE_FRED[c]}` })).catch(() => null)
+            c === 'EUR'
+        ? ecbYield('10Y').then(pts => ({ pts, src: 'ECB Yield Curve 10Y AAA' })).catch(() => fredPts(YIELD10_FRED[c], 1).then(pts => ({ pts, src: `FRED ${YIELD10_FRED[c]}` })).catch(() => null))
+        : fredPts(YIELD10_FRED[c], 1).then(pts => ({ pts, src: `FRED ${YIELD10_FRED[c]}` })).catch(() => null),
+      c === 'EUR'
+        ? ecbYield('2Y').then(pts => ({ pts, src: 'ECB Yield Curve 2Y AAA' })).catch(() => fredPts(SHORT_RATE_FRED[c], 1).then(pts => ({ pts, src: `FRED ${SHORT_RATE_FRED[c]}` })).catch(() => null))
+        : fredPts(SHORT_RATE_FRED[c], 1).then(pts => ({ pts, src: `FRED ${SHORT_RATE_FRED[c]}` })).catch(() => null)
     ]);
 
     const wrap = (m, r, freqOverride = null) => {
@@ -2668,8 +2695,8 @@ async function fundamentals(force = false) {
     const coreCpi = wrap('coreCpi', rCoreCpi);
     const gdp = wrap('gdp', rGdp, 'quarterly');
     const unemp = wrap('unemp', rUnemp);
-    const yield10y = wrap('yield10y', rY10, c === 'USD' ? 'daily' : 'monthly');
-    const yieldShort = wrap('yieldShort', rShort, c === 'USD' ? 'daily' : 'monthly');
+    const yield10y = wrap('yield10y', rY10, (c === 'USD' || c === 'EUR') ? 'daily' : 'monthly');
+const yieldShort = wrap('yieldShort', rShort, (c === 'USD' || c === 'EUR') ? 'daily' : 'monthly');
 
     // Stance derived from 6M rate trajectory
     let stanceVal = 0;
