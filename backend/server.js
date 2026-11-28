@@ -3641,6 +3641,7 @@ http.createServer(async (req, res) => {
       });
       return;
     }
+    
 
     send(res, 404, { error: 'Not found' });
   } catch (e) {
