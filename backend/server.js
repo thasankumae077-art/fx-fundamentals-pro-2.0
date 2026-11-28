@@ -3620,12 +3620,18 @@ http.createServer(async (req, res) => {
             return send(res, 400, { error: 'Prompt is required.' });
           }
 
-          const systemInstruction =
-            'You are an institutional FX Macro & Derivatives Desk Analyst embedded inside FX Fundamentals Pro. Analyze the provided live macro JSON snapshot (Macro Scores, Economic Surprises, 2Y Rate Path, Regime Velocity, COT Squeeze Radar, Open Portfolio Exposure, Calendar, News). Be concise, quantitative, and actionable. Cite exact numbers from the snapshot. Format cleanly with short bullet points and bold key levels/pairs. Frame as institutional desk scenarios & risk checks.';
+          const systemInstruction = [
+            'You are a full-spectrum Institutional Finance & Global Markets Copilot embedded inside FX Fundamentals Pro.',
+            'You can answer ANY finance question: FX, macroeconomics, central banks, equities, bonds/yields, commodities (gold, oil), crypto, earnings, geopolitics, risk management, derivatives, and general financial concepts.',
+            'PRIORITY RULES:',
+            '1. When the user asks about FX Fundamentals Pro metrics, G8 macro scores, COT squeeze radar, 2Y rate paths, regime velocity, or their open journal portfolio, cite exact numbers from the LIVE DESK SNAPSHOT first.',
+            '2. When the user asks about anything outside the snapshot (upcoming central bank dates, live news, stocks, earnings, economic releases, broader finance questions), use Google Search grounding to retrieve current, accurate facts—never say "not in the snapshot" when you can search or answer directly.',
+            '3. Be concise, quantitative, and well-structured with short bullet points and bold key figures. Always convert market event times to IST when helpful.'
+          ].join(' ');
 
           const contents = [];
           if (Array.isArray(history)) {
-            history.slice(-6).forEach(m => {
+            history.slice(-8).forEach(m => {
               const msgText = m && (m.content || m.text);
               if (m && m.role && msgText) {
                 contents.push({
@@ -3640,29 +3646,29 @@ http.createServer(async (req, res) => {
             role: 'user',
             parts: [{
               text:
-                'MODE: ' + String(mode).toUpperCase() +
+                'CURRENT TIME (UTC): ' + new Date().toISOString() +
+                '\nMODE: ' + String(mode).toUpperCase() +
                 '\nLIVE DESK SNAPSHOT:\n' + JSON.stringify(context).slice(0, 18000) +
-                '\n\nREQUEST:\n' + prompt
+                '\n\nUSER QUESTION:\n' + prompt
             }]
           });
 
-const trimmedKey = apiKey.trim();
+          const trimmedKey = apiKey.trim();
           const hostVertex = ['aiplatform', 'googleapis', 'com'].join('.');
           const hostStudio = ['generativelanguage', 'googleapis', 'com'].join('.');
           const vertexBase = ['https:/', hostVertex, 'v1', 'publishers', 'google', 'models', ''].join('/');
           const studioBase = ['https:/', hostStudio, 'v1beta', 'models', ''].join('/');
 
-          // Pick the matching host first based on key type (AIza = AI Studio, AQ. = Vertex Express)
           const bases = trimmedKey.startsWith('AIza')
             ? [studioBase, vertexBase]
             : [vertexBase, studioBase];
 
-          // Use minimal/zero thinking so desk replies return in ~1-3s instead of timing out
-                   // Current GA Flash models first; minimal/low thinking keeps replies fast (~1-3s)
+          // Current GA Flash models with Google Search Grounding enabled first, falling back cleanly if needed
           const attempts = [
-            { id: 'gemini-3.8-flash', thinkingConfig: { thinkingLevel: 'LOW' } },
-            { id: 'gemini-3.5-flash-lite', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
-            { id: 'gemini-3-flash-preview', thinkingConfig: { thinkingLevel: 'MINIMAL' } }
+            { id: 'gemini-3.8-flash', thinkingConfig: { thinkingLevel: 'LOW' }, useSearch: true },
+            { id: 'gemini-3.5-flash-lite', thinkingConfig: { thinkingLevel: 'MINIMAL' }, useSearch: true },
+            { id: 'gemini-3.8-flash', thinkingConfig: { thinkingLevel: 'LOW' }, useSearch: false },
+            { id: 'gemini-3.5-flash-lite', thinkingConfig: { thinkingLevel: 'MINIMAL' }, useSearch: false }
           ];
 
           let lastError = 'Gemini API error';
@@ -3672,15 +3678,18 @@ const trimmedKey = apiKey.trim();
           for (const base of bases) {
             for (const m of attempts) {
               try {
-                const payload = JSON.stringify({
+                const bodyObj = {
                   systemInstruction: { parts: [{ text: systemInstruction }] },
                   contents,
                   generationConfig: {
                     temperature: 0.35,
-                    maxOutputTokens: 1200,
+                    maxOutputTokens: 1400,
                     thinkingConfig: m.thinkingConfig
                   }
-                });
+                };
+                if (m.useSearch) {
+                  bodyObj.tools = [{ google_search: {} }];
+                }
 
                 const r = await fetch(base + m.id + ':generateContent', {
                   method: 'POST',
@@ -3688,7 +3697,7 @@ const trimmedKey = apiKey.trim();
                     'Content-Type': 'application/json',
                     'x-goog-api-key': trimmedKey
                   },
-                  body: payload,
+                  body: JSON.stringify(bodyObj),
                   signal: AbortSignal.timeout(25000)
                 });
 
@@ -3696,7 +3705,7 @@ const trimmedKey = apiKey.trim();
                 if (!r.ok) {
                   lastStatus = r.status;
                   const msg = (data && data.error && data.error.message) || ('API HTTP ' + r.status);
-                  errLog.push(`${m.id} (${r.status}): ${msg}`);
+                  errLog.push(`${m.id}${m.useSearch ? '+search' : ''} (${r.status}): ${msg}`);
                   lastError = msg;
                   continue;
                 }
@@ -3709,7 +3718,12 @@ const trimmedKey = apiKey.trim();
                   .join('')
                   .trim() || 'No analysis returned.';
 
-                return send(res, 200, { reply, model: m.id, timestamp: new Date().toISOString() });
+                return send(res, 200, {
+                  reply,
+                  model: m.id,
+                  grounded: m.useSearch,
+                  timestamp: new Date().toISOString()
+                });
               } catch (fetchErr) {
                 lastStatus = 504;
                 const msg = (fetchErr && fetchErr.message) || 'Upstream timeout';
