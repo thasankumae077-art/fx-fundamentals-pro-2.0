@@ -203,9 +203,21 @@ function buildIndicator({
   if (value == null || isNaN(Number(value))) {
     return makeUnavailableIndicator(source || 'Upstream', 'N/A — Pending Release', frequency, unit);
   }
-  const iso = isoDate(observationDate) || fetchedAt.slice(0, 10);
-  const obsMs = new Date(iso).getTime();
-  const ageDays = isNaN(obsMs) ? null : Math.max(0, Math.round((Date.now() - obsMs) / DAY_MS));
+const iso = isoDate(observationDate) || fetchedAt.slice(0, 10);
+const obsMs = new Date(iso).getTime();
+// Measure freshness from the END of the reporting period (month-end / quarter-end)
+// so newly released Oct monthly or Q3 quarterly prints aren't penalized by +30d/+90d
+let effectiveMs = obsMs;
+if (!isNaN(obsMs) && (frequency === 'monthly' || frequency === 'quarterly')) {
+  const y = Number(iso.slice(0, 4));
+  const m = Number(iso.slice(5, 7));
+  if (y && m) {
+    const endMonth = frequency === 'quarterly' ? Math.ceil(m / 3) * 3 : m;
+    effectiveMs = Date.UTC(y, endMonth, 0); // Last calendar day of the month/quarter
+  }
+}
+const ageDays = isNaN(effectiveMs) ? null : Math.max(0, Math.round((Date.now() - effectiveMs) / DAY_MS));
+
   const limit = staleLimitDays(frequency);
   const isStale = ageDays != null ? ageDays > limit : true;
   const obsFormatted = formatObservationPeriod(iso, frequency);
