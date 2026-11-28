@@ -3544,7 +3544,7 @@ http.createServer(async (req, res) => {
      const contextStr = body.context ? `\n\nLive Dashboard Context:\n${JSON.stringify(body.context).slice(0, 12000)}` : '';
 
       const gRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
