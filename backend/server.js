@@ -3646,10 +3646,12 @@ http.createServer(async (req, res) => {
             }]
           });
 
-          const models = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
-          const endpoints = [
-            'https://googleapis.com',
-            'https://generativelanguage.googleapis.com/v1beta/models/'
+const models = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
+          const hostA = ['aiplatform', 'googleapis', 'com'].join('.');
+          const hostB = ['generativelanguage', 'googleapis', 'com'].join('.');
+          const bases = [
+            ['https:/', hostA, 'v1', 'publishers', 'google', 'models', ''].join('/'),
+            ['https:/', hostB, 'v1beta', 'models', ''].join('/')
           ];
           const payload = JSON.stringify({
             systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -3660,15 +3662,16 @@ http.createServer(async (req, res) => {
           let lastError = 'Gemini API error';
           let lastStatus = 500;
 
-          for (const base of endpoints) {
+          for (const base of bases) {
             for (const modelId of models) {
               const r = await fetch(base + modelId + ':generateContent', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
-                  'x-goog-api-key': apiKey
+                  'x-goog-api-key': apiKey.trim()
                 },
-                body: payload
+                body: payload,
+                signal: AbortSignal.timeout(30000)
               });
 
               const data = await r.json().catch(() => ({}));
@@ -3678,7 +3681,8 @@ http.createServer(async (req, res) => {
                 continue;
               }
 
-              const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+              const c0 = Array.isArray(data && data.candidates) ? data.candidates[0] : null;
+              const parts = (c0 && c0.content && Array.isArray(c0.content.parts)) ? c0.content.parts : [];
               const reply = parts.map(pt => pt.text || '').join('').trim() || 'No analysis returned.';
               return send(res, 200, { reply, model: modelId, timestamp: new Date().toISOString() });
             }
