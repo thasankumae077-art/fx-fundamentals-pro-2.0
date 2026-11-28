@@ -3517,19 +3517,54 @@ http.createServer(async (req, res) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('Strict-Transport-Security', 'max-age=15552000');
   res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'unsafe-inline'");
-  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
   if (o && ORIGINS.includes(o)) {
     res.setHeader('Access-Control-Allow-Origin', o);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
     res.setHeader('Vary', 'Origin');
   }
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-  if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed' });
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    return send(res, 405, { error: 'Method not allowed' });
+  }
 
   const U = new URL(req.url, 'http://x');
   const p = U.pathname;
   const force = U.searchParams.get('force') === '1';
-
   try {
+    if (p === '/api/ai-copilot' && req.method === 'POST') {
+      let rawBody = '';
+      for await (const chunk of req) rawBody += chunk;
+      const body = rawBody ? JSON.parse(rawBody) : {};
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) return send(res, 500, { error: 'GEMINI_API_KEY not configured' });
+
+      const userMsg = body.message || body.prompt || (body.messages && body.messages.length ? body.messages[body.messages.length - 1].content : '') || 'Summarize current FX macro regime.';
+     const contextStr = body.context ? `\n\nLive Dashboard Context:\n${JSON.stringify(body.context).slice(0, 12000)}` : '';
+
+      const gRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [{
+                text: `You are an institutional FX Macro Desk Copilot. Be concise, data-driven, and actionable.\n\nUser Question: ${userMsg}${contextStr}`
+              }]
+            }]
+          })
+        }
+      );
+      const gData = await gRes.json();
+      if (!gRes.ok) {
+        return send(res, gRes.status, { error: gData?.error?.message || 'Gemini API error' });
+      }
+      const reply = gData?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response generated.';
+      return send(res, 200, { reply, response: reply, answer: reply, text: reply });
+    }
+
     if (p === '/api/health') {
       return send(res, 200, {
         ok: true,
