@@ -817,14 +817,35 @@ function NextHigh({ cal }) {
 // 7. OVERVIEW & CONSOLIDATED MACRO EXECUTIVE DASHBOARD (PRIORITY 1, 3, 5)
 // ============================================================================
 
-function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, cal, dash, assets, cot }) { 
-  const surprises = useMemo(() => computeEconomicSurprises(cal), [cal]);
-  const transition = useMemo(() => computeRegimeTransition(A, fx, intel, gold, dash, assets), [A, fx, intel, gold, dash, assets]);
-  const cbExp = useMemo(() => computeCentralBankExpectations(A, fx, dash), [A, fx, dash]);
-  const squeezeData = useMemo(() => computeInstitutionalSqueeze(cot, fx), [cot, fx]);
+function Overview({ A, fx, intel, gold, cal, dash, assets, cot, buildDeskSnapshot, onOpenScore, onOpenAudit, onNavigate }) {
   const [strTf, setStrTf] = useState(21);
+  const surprises = useMemo(() => computeEconomicSurprises(cal), [cal]);
+  const cbExp = useMemo(() => computeCentralBankExpectations(A, fx, dash), [A, fx, dash]);
+  const transition = useMemo(() => computeRegimeTransition(A, fx, intel, gold, dash, assets), [A, fx, intel, gold, dash, assets]);
+  const squeezeData = useMemo(() => computeInstitutionalSqueeze(cot, fx), [cot, fx]);
   const [corrWin, setCorrWin] = useState('60D');
   const [methodOpen, setMethodOpen] = useState(false);
+  const [briefing, setBriefing] = useState(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefErr, setBriefErr] = useState(null);
+
+  const runMorningBriefing = async () => {
+    if (briefLoading || !buildDeskSnapshot) return;
+    setBriefLoading(true);
+    setBriefErr(null);
+    try {
+      const out = await callAiCopilot({
+        prompt: "Generate an executive Morning Desk Briefing covering today's global macro regime, top divergent FX pairs, 2Y rate path repricing, economic surprises, COT squeeze alerts, and key IST event risks.",
+        mode: 'briefing',
+        context: buildDeskSnapshot()
+      });
+      setBriefing(out);
+    } catch (e) {
+      setBriefErr('Briefing failed: ' + (e.message || 'Source timeout'));
+    } finally {
+      setBriefLoading(false);
+    }
+  };
 
   if (!A) return <Wait />;
 
@@ -842,11 +863,44 @@ function Overview({ A, fx, intel, gold, onOpenScore, onOpenAudit, onNavigate, ca
 
   return (
     <>
-      <T s={24} w='800'>Macro Executive Dashboard</T>
+      <Row style={{ flexWrap: 'wrap', marginBottom: 4 }}>
+        <T s={24} w='800'>Macro Executive Dashboard</T>
+        <Btn
+          primary
+          small
+          t={briefLoading ? 'Generating Briefing…' : '✨ Generate Morning Desk Briefing'}
+          on={runMorningBriefing}
+          style={{ marginTop: 4 }}
+        />
+      </Row>
       <Note>
         Consolidated macro regime, clean divergent setups, freshness diagnostics, and calibrated multi-factor signals (ECB reference rates to {A.date}). Click any currency score to inspect its full 7-factor breakdown.
       </Note>
 
+      {!!briefErr && (
+        <Card style={{ borderColor: C.dn, backgroundColor: '#2a0d14', padding: 10 }}>
+          <T s={12} c={C.dnTx} w='700'>{briefErr}</T>
+        </Card>
+      )}
+
+      {briefing && (
+        <Card
+          title='✨ AI Morning Desk Briefing'
+          style={{ borderColor: C.ac, backgroundColor: '#0e193d' }}
+          right={
+            <Row style={{ justifyContent: 'flex-end' }}>
+              <T s={10} c={C.mut} style={{ marginRight: 10 }}>{fmtIstTime(briefing.timestamp)}</T>
+              <TouchableOpacity onPress={() => setBriefing(null)}>
+                <T s={12} w='700' c={C.mut}>Dismiss ✕</T>
+              </TouchableOpacity>
+            </Row>
+          }
+        >
+          <T s={13} c={C.tx} style={{ lineHeight: 20 }}>{briefing.text}</T>
+        </Card>
+      )}
+
+      {/* PRIORITY 5: Consolidated Executive Dashboard Strip */}
       {/* PRIORITY 5: Consolidated Executive Dashboard Strip */}
       <Card title='Executive Macro Snapshot' style={{ borderColor: C.ac, backgroundColor: '#0e193d' }}>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10 }}>
@@ -2332,6 +2386,261 @@ function PairModal({ p, A, fx, cot, send, onClose, onOpenScore }) {
     </Modal>
   );
 }
+
+// == START INSERT: AI DESK COPILOT HELPER & FLOATING DRAWER ==
+const API_BASE = API;
+const COPILOT_QUICK_PROMPTS = [
+  'Top macro divergence right now?',
+  'Where is COT squeeze risk highest?',
+  "Summarize today's event risk"
+];
+
+async function callAiCopilot(payload) {
+  const res = await fetch(`${API_BASE}/api/ai-copilot`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  const text = await res.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+  if (!res.ok) {
+    throw new Error(json?.error || json?.detail || `HTTP ${res.status}`);
+  }
+  const reply =
+    json?.reply ??
+    json?.briefing ??
+    json?.audit ??
+    json?.answer ??
+    json?.text ??
+    json?.content ??
+    json?.message ??
+    (typeof json === 'string' ? json : text);
+  if (!reply || !String(reply).trim()) {
+    throw new Error('Empty response from /api/ai-copilot');
+  }
+  return {
+    text: String(reply).trim(),
+    model: json?.model || null,
+    timestamp: json?.timestamp || new Date().toISOString()
+  };
+}
+
+function AiDeskDrawer({ buildDeskSnapshot, wide }) {
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const listRef = useRef(null);
+
+  const sendPrompt = async rawPrompt => {
+    const prompt = String(rawPrompt ?? input).trim();
+    if (!prompt || loading) return;
+
+    const history = messages.slice(-10).map(m => ({ role: m.role, content: m.content }));
+    const userMsg = { id: 'u_' + Date.now(), role: 'user', content: prompt, ts: new Date().toISOString() };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    setErr(null);
+    setLoading(true);
+    setTimeout(() => listRef.current?.scrollToEnd?.({ animated: true }), 60);
+
+    try {
+      const out = await callAiCopilot({
+        prompt,
+        mode: 'chat',
+        context: buildDeskSnapshot(),
+        history
+      });
+      setMessages(prev => [
+        ...prev,
+        { id: 'a_' + Date.now(), role: 'assistant', content: out.text, ts: out.timestamp, model: out.model }
+      ]);
+    } catch (e) {
+      setErr('Copilot error: ' + (e.message || 'Request failed'));
+    } finally {
+      setLoading(false);
+      setTimeout(() => listRef.current?.scrollToEnd?.({ animated: true }), 80);
+    }
+  };
+
+  return (
+    <>
+      {/* Floating bottom-right launcher across all tabs */}
+      <TouchableOpacity
+        activeOpacity={0.85}
+        onPress={() => setOpen(true)}
+        style={{
+          position: 'absolute',
+          right: wide ? 24 : 14,
+          bottom: wide ? 24 : 68,
+          zIndex: 999,
+          backgroundColor: C.ac,
+          borderWidth: 1,
+          borderColor: '#60a5fa',
+          borderRadius: 24,
+          paddingHorizontal: 15,
+          paddingVertical: 11,
+          flexDirection: 'row',
+          alignItems: 'center',
+          elevation: 6,
+          shadowColor: '#000',
+          shadowOpacity: 0.4,
+          shadowRadius: 8,
+          shadowOffset: { width: 0, height: 4 }
+        }}
+      >
+        <T s={13} w='800' c='#fff'>✨ AI Desk Copilot</T>
+      </TouchableOpacity>
+
+      {/* Slide-over Copilot Modal */}
+      <Modal transparent animationType='slide' visible={open} onRequestClose={() => setOpen(false)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', alignItems: 'flex-end' }}>
+          <TouchableOpacity activeOpacity={1} onPress={() => setOpen(false)} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }} />
+          <View
+            style={{
+              width: wide ? 470 : '100%',
+              height: '100%',
+              backgroundColor: C.bg,
+              borderLeftWidth: 1,
+              borderLeftColor: C.line,
+              paddingTop: Platform.OS === 'android' ? 28 : 10
+            }}
+          >
+            {/* Drawer Header */}
+            <Row style={{ padding: 14, borderBottomWidth: 1, borderBottomColor: C.line, backgroundColor: C.bgDeep }}>
+              <View style={{ flex: 1 }}>
+                <T s={17} w='800'>✨ AI Desk Copilot</T>
+                <T s={10} c={C.mut}>Live Macro, 2Y Rate Path, Surprises, COT &amp; Portfolio Context</T>
+              </View>
+              {messages.length > 0 && (
+                <TouchableOpacity onPress={() => { setMessages([]); setErr(null); }} style={{ marginRight: 12 }}>
+                  <T s={11} w='700' c={C.mut}>Clear</T>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity onPress={() => setOpen(false)}>
+                <T s={20}>✕</T>
+              </TouchableOpacity>
+            </Row>
+
+            {/* Quick-Prompt Chips */}
+            <View style={{ paddingHorizontal: 12, paddingTop: 10, paddingBottom: 6, borderBottomWidth: 1, borderBottomColor: C.line }}>
+              <T s={10} c={C.mut} w='800' style={{ marginBottom: 6 }}>QUICK DESK PROMPTS</T>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                {COPILOT_QUICK_PROMPTS.map(qp => (
+                  <TouchableOpacity
+                    key={qp}
+                    disabled={loading}
+                    onPress={() => sendPrompt(qp)}
+                    style={{
+                      backgroundColor: C.card,
+                      borderWidth: 1,
+                      borderColor: C.ac,
+                      borderRadius: 16,
+                      paddingHorizontal: 11,
+                      paddingVertical: 6,
+                      marginRight: 7,
+                      opacity: loading ? 0.6 : 1
+                    }}
+                  >
+                    <T s={11} w='700' c={C.tx}>{qp}</T>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+
+            {/* Chat History */}
+            <ScrollView
+              ref={listRef}
+              style={{ flex: 1 }}
+              contentContainerStyle={{ padding: 14 }}
+              keyboardShouldPersistTaps='handled'
+            >
+              {messages.length === 0 && (
+                <Card style={{ backgroundColor: C.cardAlt }}>
+                  <T s={13} w='700' style={{ marginBottom: 4 }}>Institutional FX Desk Assistant Ready</T>
+                  <T s={12} c={C.mut} style={{ lineHeight: 18 }}>
+                    Tap a quick prompt above or ask about currency score spreads, 2Y implied rate paths, economic surprises, COT squeeze setups, or your open journal exposure.
+                  </T>
+                </Card>
+              )}
+
+              {messages.map(m => {
+                const isUser = m.role === 'user';
+                return (
+                  <View
+                    key={m.id}
+                    style={{
+                      alignSelf: isUser ? 'flex-end' : 'flex-start',
+                      maxWidth: '90%',
+                      backgroundColor: isUser ? C.acBg : C.card,
+                      borderWidth: 1,
+                      borderColor: isUser ? C.ac : C.line,
+                      borderRadius: 12,
+                      padding: 11,
+                      marginBottom: 10
+                    }}
+                  >
+                    <T s={10} w='800' c={isUser ? '#bfdbfe' : C.ac} style={{ marginBottom: 4 }}>
+                      {isUser ? 'YOU' : 'AI DESK COPILOT'} · {fmtIstTime(m.ts)}
+                    </T>
+                    <T s={13} c={C.tx} style={{ lineHeight: 20 }}>{m.content}</T>
+                  </View>
+                );
+              })}
+
+              {loading && (
+                <View style={{ alignSelf: 'flex-start', backgroundColor: C.card, borderWidth: 1, borderColor: C.line, borderRadius: 12, padding: 10, marginBottom: 10 }}>
+                  <T s={12} c={C.ac} w='700'>Analyzing live desk snapshot…</T>
+                </View>
+              )}
+
+              {!!err && (
+                <Card style={{ borderColor: C.dn, backgroundColor: '#2a0d14', padding: 10 }}>
+                  <T s={12} c={C.dnTx} w='700'>{err}</T>
+                </Card>
+              )}
+            </ScrollView>
+
+            {/* Input Bar */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', padding: 12, borderTopWidth: 1, borderTopColor: C.line, backgroundColor: C.bgDeep }}>
+              <TextInput
+                value={input}
+                onChangeText={setInput}
+                onSubmitEditing={() => sendPrompt(input)}
+                placeholder='Ask the FX Desk Copilot…'
+                placeholderTextColor={C.mut}
+                returnKeyType='send'
+                style={{
+                  flex: 1,
+                  color: C.tx,
+                  backgroundColor: C.card,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: C.line,
+                  paddingHorizontal: 11,
+                  paddingVertical: 9,
+                  fontSize: 13,
+                  marginRight: 8
+                }}
+              />
+              <Btn primary t={loading ? '…' : 'Send'} on={() => sendPrompt(input)} style={{ paddingVertical: 9 }} />
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+}
+// == END INSERT: AI DESK COPILOT HELPER & FLOATING DRAWER ==
+
+// ============================================================================
+// 6. SESSION BAR & HIGH-IMPACT COUNTDOWN BANNER (IST)
 
 // ============================================================================
 // 11. MACRO & CROSS-ASSET DRIVERS SCREEN (PRIORITY 1.2, 2.14 & PRIORITY 3.2)
@@ -4366,13 +4675,46 @@ function PortfolioExposureGuardrail({ trades, A, assets }) {
 }
 // == END INSERT: FEATURE E ==
 // == START REPLACE: Journal COMPONENT (adds OPEN/CLOSED status, Lots, Risk % & Feature E Guardrail) ==
-function Journal({ trades, setTrades, A, assets }) {
+function Journal({ trades, setTrades, A, assets, buildDeskSnapshot }) {
   const [p, setP] = useState({ pair: '', side: 'LONG', status: 'OPEN', lots: '1.0', riskPct: '1.0', r: '', thesis: '' });
   const [bk, setBk] = useState('');
   const [msg, setMsg] = useState(null);
+  const [auditRes, setAuditRes] = useState(null);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditErr, setAuditErr] = useState(null);
   const closedTrades = useMemo(() => trades.filter(t => t.status !== 'OPEN' && okN(t.r)), [trades]);
   const S = journalStats(closedTrades);
 
+  const runPreTradeAudit = async () => {
+    if (auditLoading || !buildDeskSnapshot) return;
+    if (!p.pair.trim()) {
+      setAuditErr('Enter a Pair / Asset symbol above before running an AI Pre-Trade Risk Audit.');
+      return;
+    }
+    const tradeSetup = {
+      pair: p.pair.trim().toUpperCase(),
+      side: p.side,
+      status: p.status,
+      lots: Math.max(0.01, parseFloat(p.lots) || 1.0),
+      riskPct: Math.max(0.1, parseFloat(p.riskPct) || 1.0),
+      thesis: (p.thesis || '').trim()
+    };
+    setAuditLoading(true);
+    setAuditErr(null);
+    try {
+      const out = await callAiCopilot({
+        prompt: `Run a pre-trade institutional risk audit for ${tradeSetup.side} ${tradeSetup.pair} (${tradeSetup.lots} lots, ${tradeSetup.riskPct}% risk). Thesis: "${tradeSetup.thesis || 'None provided'}". Check macro alignment, 2Y rate path, COT crowding/squeeze risk, upcoming high-impact calendar catalysts, and concentration/30D correlation overlap with existing open portfolio positions.`,
+        mode: 'audit',
+        tradeSetup,
+        context: buildDeskSnapshot()
+      });
+      setAuditRes({ ...out, setup: tradeSetup });
+    } catch (e) {
+      setAuditErr('Risk audit failed: ' + (e.message || 'Source timeout'));
+    } finally {
+      setAuditLoading(false);
+    }
+  };
   const save = t => { setTrades(t); store.set('trades', t); };
   const add = () => {
     const isOpen = p.status === 'OPEN';
@@ -4439,7 +4781,35 @@ function Journal({ trades, setTrades, A, assets }) {
           <Btn small t={`Status: ${p.status}`} on={() => setP({ ...p, status: p.status === 'OPEN' ? 'CLOSED' : 'OPEN' })} style={{ backgroundColor: p.status === 'OPEN' ? C.acBg : C.line }} />
         </Row>
         <Inp label='Macro Thesis' v={p.thesis} set={x => setP({ ...p, thesis: x })} kb='default' ph='Real yield spread + clean COT' />
-        <Btn primary t={p.status === 'OPEN' ? 'Add Open Position' : 'Log Closed Trade'} on={add} style={{ marginTop: 10, alignSelf: 'flex-start' }} />
+        <Row style={{ marginTop: 10, justifyContent: 'flex-start', flexWrap: 'wrap' }}>
+          <Btn primary t={p.status === 'OPEN' ? 'Add Open Position' : 'Log Closed Trade'} on={add} style={{ marginRight: 8, marginBottom: 6 }} />
+          <Btn
+            t={auditLoading ? 'Auditing Setup…' : '🛡️ AI Pre-Trade Risk Audit'}
+            on={runPreTradeAudit}
+            style={{ backgroundColor: C.warnBg, borderWidth: 1, borderColor: C.warn, marginBottom: 6 }}
+          />
+        </Row>
+
+        {!!auditErr && (
+          <View style={{ backgroundColor: '#2a0d14', borderWidth: 1, borderColor: C.dn, borderRadius: 8, padding: 9, marginTop: 8 }}>
+            <T s={12} c={C.dnTx} w='700'>{auditErr}</T>
+          </View>
+        )}
+
+        {auditRes && (
+          <View style={{ backgroundColor: C.bg, borderWidth: 1, borderColor: C.warn, borderRadius: 10, padding: 11, marginTop: 10 }}>
+            <Row style={{ marginBottom: 6 }}>
+              <T s={12} w='800' c={C.warnTx}>
+                🛡️ AI RISK AUDIT · {auditRes.setup.side} {auditRes.setup.pair} ({auditRes.setup.lots}L · {auditRes.setup.riskPct}%)
+              </T>
+              <TouchableOpacity onPress={() => setAuditRes(null)}>
+                <T s={11} w='700' c={C.mut}>Close ✕</T>
+              </TouchableOpacity>
+            </Row>
+            <T s={12} c={C.tx} style={{ lineHeight: 19 }}>{auditRes.text}</T>
+            <T s={10} c={C.mut} style={{ marginTop: 6 }}>Audited {fmtIstTime(auditRes.timestamp)}</T>
+          </View>
+        )}
       </Card>
       <Card title='Export / Restore Backup'>
         <Row style={{ justifyContent: 'flex-start' }}>
@@ -4580,9 +4950,95 @@ export default function App() {
     return () => { clearInterval(i1); clearInterval(i2); clearInterval(i3); };
   }, []);
 
-  const A = useMemo(() => computeClientAnalytics(hist), [hist]);
+ const A = useMemo(() => computeClientAnalytics(hist), [hist]);
   const gold = useMemo(() => getUnifiedGoldFromState(intel, rates, dash, assets, fx), [intel, rates, dash, assets, fx]);
   const sendToRisk = o => { setPre({ ...o, n: Date.now() }); setTab(5); };
+
+  // Compact (<15KB) JSON desk snapshot for POST /api/ai-copilot
+  const buildDeskSnapshot = () => {
+    const nowMs = Date.now();
+    const macroScores = {};
+    CUR.forEach(c => {
+      const d = fx?.data?.[c] || {};
+      macroScores[c] = {
+        score: fx?.scores?.[c]?.totalScore ?? null,
+        rate: d.rate?.value ?? null,
+        y10: d.yield10y?.value ?? null,
+        realY10: d.realYield10y?.value ?? null,
+        cpi: d.cpi?.value ?? null,
+        gdp: d.gdp?.value ?? null,
+        unemp: d.unemp?.value ?? null,
+        guidance: d.centralBank?.guidance || null,
+        nextMtgBps: d.centralBank?.impliedNextMeetingBps ?? null,
+        mom30d: intel?.macroMomentum?.[c]?.direction || null
+      };
+    });
+
+    const surp = typeof computeEconomicSurprises === 'function' ? computeEconomicSurprises(cal) : null;
+    const cbExp = typeof computeCentralBankExpectations === 'function' ? computeCentralBankExpectations(A, fx, dash) : null;
+    const regVel = typeof computeRegimeTransition === 'function' ? computeRegimeTransition(A, fx, intel, gold, dash, assets) : null;
+    const sqz = typeof computeInstitutionalSqueeze === 'function' ? computeInstitutionalSqueeze(cot, fx) : null;
+    const openTrades = (trades || []).filter(t => t.status === 'OPEN');
+    const portExp = typeof analyzePortfolioExposure === 'function' ? analyzePortfolioExposure(openTrades, A, assets) : null;
+
+    const upcomingCal = (cal?.items || [])
+      .filter(e => (e.impact === 'High' || e.impact === 'Medium') && new Date(e.timestamp).getTime() >= nowMs - 6 * 36e5)
+      .slice(0, 8)
+      .map(e => ({ cur: e.currency, title: e.title, impact: e.impact, date: e.date, timeIst: e.time, act: e.actual, fcst: e.forecast, prev: e.previous }));
+
+    const topNews = (news || [])
+      .slice(0, 8)
+      .map(n => ({ title: String(n.title || '').slice(0, 120), cur: n.cur, impact: n.impact, tone: n.tone, conf: n.sentimentConfidence, rationale: n.rationale ? String(n.rationale).slice(0, 120) : null, at: n.publishedAt }));
+
+    const snap = {
+      generatedAtIst: fmtIstTime(new Date(nowMs).toISOString()),
+      globalRegime: intel?.macroRegime ? { regime: intel.macroRegime.regime, confPct: intel.macroRegime.confidencePct, playbook: intel.macroRegime.playbook } : null,
+      gold: { price: gold?.price ?? null, d1Pct: gold?.d1 != null ? Number((gold.d1 * 100).toFixed(2)) : null, m1Pct: gold?.m1 != null ? Number((gold.m1 * 100).toFixed(2)) : null, src: gold?.source || null },
+      macroScores,
+      topPairSignals: (intel?.pairSignals || []).slice(0, 8).map(p => ({ pair: p.pair, sig: p.signal, spread: p.spread, conf: p.confidencePct, ryDiff: p.realYieldDiff, conflict: p.hasConflict })),
+      economicSurprises: surp ? {
+        scored: surp.totalScored,
+        topBeat: surp.topPositive ? { cur: surp.topPositive.cur, score: surp.topPositive.score, b: surp.topPositive.beats, m: surp.topPositive.misses } : null,
+        topMiss: surp.topNegative ? { cur: surp.topNegative.cur, score: surp.topNegative.score, b: surp.topNegative.beats, m: surp.topNegative.misses } : null,
+        scores: Object.fromEntries(surp.list.filter(x => x.total > 0).map(x => [x.cur, x.score]))
+      } : null,
+      ratePath2Y: cbExp ? {
+        topHawk: cbExp.topHawkish ? { cur: cbExp.topHawkish.cur, bps: cbExp.topHawkish.impliedBps, steps: cbExp.topHawkish.stepLabel } : null,
+        topDove: cbExp.topDovish ? { cur: cbExp.topDovish.cur, bps: cbExp.topDovish.impliedBps, steps: cbExp.topDovish.stepLabel } : null,
+        divergences: cbExp.ranked.filter(x => x.divergenceFlag).map(x => ({ cur: x.cur, bps: x.impliedBps, note: x.divergenceNote })),
+        byCur: Object.fromEntries(cbExp.ranked.map(x => [x.cur, { bps: x.impliedBps, regime: x.regime, slope: x.slope2s10s, realRate: x.realPolicyRate }]))
+      } : null,
+      regimeVelocity: regVel?.available ? {
+        regime: regVel.currentRegime,
+        velocity14d: regVel.velocity,
+        earlyShift: regVel.earlyShift,
+        target: regVel.targetRegime,
+        drivers: regVel.driverSummary,
+        favored: regVel.favored,
+        vulnerable: regVel.vulnerable
+      } : null,
+      cotSqueeze: sqz ? {
+        highAlerts: sqz.highAlertCount,
+        topCandidates: sqz.topCandidates.map(x => ({ cur: x.cur, dir: x.direction, sqz: x.squeezeScore, crowd: x.crowdingPct, specNet: x.specNet, wow: x.wowChange, align: x.alignmentLabel }))
+      } : null,
+      portfolio: {
+        openCount: openTrades.length,
+        openPositions: openTrades.slice(0, 12).map(t => ({ pair: t.pair, side: t.side, lots: t.lots || 1, riskPct: t.riskPct || 1, thesis: (t.thesis || '').slice(0, 80) })),
+        netExposure: portExp ? portExp.rows.filter(r => r.netRiskPct !== 0).map(r => ({ cur: r.cur, netX: r.netCount, lots: Number(r.netLots.toFixed(2)), riskPct: Number(r.netRiskPct.toFixed(2)), sharePct: Math.round(r.sharePct) })) : [],
+        warnings: portExp ? portExp.warnings.map(w => w.text) : []
+      },
+      calendar: upcomingCal,
+      topNews
+    };
+
+    // Strict <15KB payload safeguard
+    if (JSON.stringify(snap).length > 14500) {
+      snap.topNews = snap.topNews.slice(0, 4);
+      snap.calendar = snap.calendar.slice(0, 4);
+      snap.topPairSignals = snap.topPairSignals.slice(0, 5);
+    }
+    return snap;
+  };
 
   const dot = conn === 'LIVE' ? C.up : conn.startsWith('OFF') ? C.dn : C.warn;
   const statusEl = (
@@ -4601,14 +5057,14 @@ export default function App() {
       refreshControl={<RefreshControl refreshing={busy} onRefresh={() => refresh(true)} tintColor={C.ac} colors={[C.ac]} />}
     >
       {(tab === 0 || tab === 4) && <NextHigh cal={cal} />}
-      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} dash={dash} assets={assets} cot={cot} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
+      {tab === 0 && <Overview A={A} fx={fx} intel={intel} gold={gold} cal={cal} dash={dash} assets={assets} cot={cot} buildDeskSnapshot={buildDeskSnapshot} onOpenScore={setScoreModalCur} onOpenAudit={() => setAuditOpen(true)} onNavigate={setTab} />}
       {tab === 9 && <SwingIntel intel={intel} onOpenScore={setScoreModalCur} />}
-      {tab === 1 && <Fundamentals A={A} fx={fx} cot={cot} onOpenScore={setScoreModalCur} />}
+      {tab === 1 && <Fundamentals A={A} fx={fx} cot={cot} dash={dash} onOpenScore={setScoreModalCur} />}
       {tab === 2 && <Scanner A={A} fx={fx} cot={cot} intel={intel} gold={gold} send={sendToRisk} onOpenScore={setScoreModalCur} />}
       {tab === 3 && <Macro A={A} fx={fx} d={dash} assets={assets} intel={intel} gold={gold} />}
       {tab === 4 && <News news={news} trades={trades} nf={nf} setNf={setNf} />}
       {tab === 5 && <Risk pre={pre} />}
-      {tab === 6 && <Journal trades={trades} setTrades={setTrades} A={A} assets={assets} />}
+      {tab === 6 && <Journal trades={trades} setTrades={setTrades} A={A} assets={assets} buildDeskSnapshot={buildDeskSnapshot} />}
       {tab === 7 && <EconCalendar cal={cal} refreshTick={refreshTick} />}
       {tab === 8 && <Picks A={A} fx={fx} cal={cal} news={news} dash={dash} assets={assets} intel={intel} gold={gold} scrollRef={scrollRef} />}
     </ScrollView>
@@ -4618,6 +5074,7 @@ export default function App() {
     <>
       <ScoreBreakdownModal currency={scoreModalCur} fx={fx} onClose={() => setScoreModalCur(null)} />
       {auditOpen && <FreshnessAuditModal intel={intel} fx={fx} dash={dash} onClose={() => setAuditOpen(false)} />}
+      <AiDeskDrawer buildDeskSnapshot={buildDeskSnapshot} wide={wide} />
     </>
   );
 
