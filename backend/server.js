@@ -3521,152 +3521,62 @@ http.createServer(async (req, res) => {
   if (o && ORIGINS.includes(o)) {
     res.setHeader('Access-Control-Allow-Origin', o);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.setHeader('Vary', 'Origin');
-  }
-  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-  if (req.method !== 'GET' && req.method !== 'POST') {
-    return send(res, 405, { error: 'Method not allowed' });
-  }
+res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
+if (req.method !== 'GET' && !(req.method === 'POST' && req.url.startsWith('/api/ai-copilot'))) {
+  return send(res, 405, { error: 'Method not allowed' });
+}
 
   const U = new URL(req.url, 'http://x');
   const p = U.pathname;
   const force = U.searchParams.get('force') === '1';
   try {
-    if (p === '/api/ai-copilot' && req.method === 'POST') {
-      let rawBody = '';
-      for await (const chunk of req) rawBody += chunk;
-      const body = rawBody ? JSON.parse(rawBody) : {};
+if (p === '/api/ai-copilot' && req.method === 'POST') {
       const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) return send(res, 500, { error: 'GEMINI_API_KEY not configured' });
-
-      const userMsg = body.message || body.prompt || (body.messages && body.messages.length ? body.messages[body.messages.length - 1].content : '') || 'Summarize current FX macro regime.';
-     const contextStr = body.context ? `\n\nLive Dashboard Context:\n${JSON.stringify(body.context).slice(0, 6000)}` : '';
-
-              const models = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
-      let gRes, gData;
-      for (const m of models) {
-        gRes = await fetch(
-          'https://' + 'generativelanguage.' + '://googleapis.com' + m + ':generateContent?key=' + encodeURIComponent(apiKey),
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              contents: [{
-                parts: [{
-                  text: `You are an institutional FX Macro Desk Copilot. Be concise, data-driven, and actionable.\n\nUser Question: ${userMsg}${contextStr}
-                }]
-              }],
-              generationConfig: {
-                thinkingConfig: { thinkingLevel: 'low' },
-                maxOutputTokens: 1200,
-                temperature: 0.3
-              }
-            })
-          }
-        );
-        gData = await gRes.json();
-        if (gRes.ok || (gRes.status !== 503 && gRes.status !== 429)) break;
+      if (!apiKey) {
+        return send(res, 500, { error: 'GEMINI_API_KEY is not configured on the server.' });
       }
-
-      
-      if (!gRes.ok) {
-        return send(res, gRes.status, { error: gData?.error?.message || 'Gemini API error' });
-      }
-      const reply = gData?.candidates?.[0]?.content?.parts?.[0]?.text || 'No response generated.';
-      return send(res, 200, { reply, response: reply, answer: reply, text: reply });
-    }
-
-    if (p === '/api/health') {
-      return send(res, 200, {
-        ok: true,
-        version: '2.0-pro',
-        uptime: process.uptime(),
-        time: new Date().toISOString()
-      });
-    }
-    if (p === '/api/history') {
-      return send(res, 200, await cached('h', 36e5, fetchEcbRaw, force));
-    }
-    if (p === '/api/rates') {
-      return send(res, 200, await cached('rates', 300000, () => buildRates(force), force));
-    }
-    if (p === '/api/assets') {
-      return send(res, 200, await cached('assets', 18e5, () => multiAssets(force), force));
-    }
-    if (p === '/api/dashboard') {
-      return send(res, 200, await cached('d', 3e5, () => dashboard(force), force));
-    }
-    if (p === '/api/fundamentals') {
-      return send(res, 200, await cached('f', 18e5, () => fundamentals(force), force));
-    }
-    if (p === '/api/intelligence') {
-      return send(res, 200, await cached('intel', 600000, () => buildIntelligence(force), force));
-    }
-    if (p === '/api/calendar') {
-      const range = parseCalRange(U.searchParams.get('from'), U.searchParams.get('to'));
-      const ttl = range.isFutureOnly ? 300000 : 120000;
-      return send(res, 200, await cached(range.cacheKey, ttl, () => calendar(range), force));
-    }
-    if (p === '/api/cot') {
-      return send(res, 200, await cached('cot', 432e5, cot, force));
-    }
-    if (p === '/api/news') {
-      if (!news.length) await firstPoll.catch(() => {});
-      return send(res, 200, {
-        items: news.filter(n => !isNoiseNews(n.title, n.summary)).map(presentNews),
-        lastPoll,
-        cacheSeconds: 900
-      });
-    }
-    if (p === '/api/news/status') {
-      return send(res, 200, {
-        count: news.length,
-        high: news.filter(n => n.impact === 'HIGH').length,
-        lastPoll,
-        clients: sseClients.size
-      });
-    }
-    if (p === '/api/news/stream') {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
-      res.write(': connected\n\n');
-      sseClients.add(res);
-      const hb = setInterval(() => res.write(': hb\n\n'), 25000);
-      return req.on('close', () => { clearInterval(hb); sseClients.delete(res); });
-    }
-    if (STATIC[p]) {
-      return send(res, 200, fs.readFileSync(path.join(__dirname, 'public', STATIC[p])), 'text/html; charset=utf-8');
-    }
-        if (p === '/api/ai-copilot' && req.method === 'POST') {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) return send(res, 500, { error: 'GEMINI_API_KEY is not configured on Render.' });
       let raw = '';
       req.on('data', chunk => {
         raw += chunk;
-        if (raw.length > 262144) req.destroy();
+        if (raw.length > 250000) req.destroy();
       });
       req.on('end', async () => {
         try {
           const { prompt, mode = 'chat', context = {}, history = [] } = JSON.parse(raw || '{}');
-          if (!prompt || typeof prompt !== 'string') return send(res, 400, { error: 'Prompt is required.' });
-          const systemInstruction = 'You are an institutional FX Macro & Derivatives Desk Analyst embedded inside FX Fundamentals Pro. Analyze the provided live macro JSON snapshot (Macro Scores, Economic Surprises, 2Y Rate Path, Regime Velocity, COT Squeeze Radar, Open Portfolio Exposure, Calendar, News). Be concise, quantitative, and actionable. Cite exact numbers from the snapshot. Format cleanly with short bullet points and bold key levels/pairs. Frame as institutional desk scenarios & risk checks.';
+          if (!prompt || typeof prompt !== 'string') {
+            return send(res, 400, { error: 'Prompt is required.' });
+          }
+
+          const systemInstruction =
+            'You are an institutional FX Macro & Derivatives Desk Analyst embedded inside FX Fundamentals Pro. Analyze the provided live macro JSON snapshot (Macro Scores, Economic Surprises, 2Y Rate Path, Regime Velocity, COT Squeeze Radar, Open Portfolio Exposure, Calendar, News). Be concise, quantitative, and actionable. Cite exact numbers from the snapshot. Format cleanly with short bullet points and bold key levels/pairs. Frame as institutional desk scenarios & risk checks.';
+
           const contents = [];
           if (Array.isArray(history)) {
             history.slice(-6).forEach(m => {
-              if (m && m.role && m.text) {
+              const msgText = m && (m.content || m.text);
+              if (m && m.role && msgText) {
                 contents.push({
                   role: m.role === 'assistant' ? 'model' : 'user',
-                  parts: [{ text: String(m.text).slice(0, 3000) }]
+                  parts: [{ text: String(msgText).slice(0, 3000) }]
                 });
               }
             });
           }
+
           contents.push({
             role: 'user',
-            parts: [{ text: `MODE: ${String(mode).toUpperCase()}\nLIVE DESK SNAPSHOT:\n${JSON.stringify(context).slice(0, 18000)}\n\nREQUEST:\n${prompt}` }]
+            parts: [{
+              text:
+                'MODE: ' + String(mode).toUpperCase() +
+                '\nLIVE DESK SNAPSHOT:\n' + JSON.stringify(context).slice(0, 18000) +
+                '\n\nREQUEST:\n' + prompt
+            }]
           });
-                                       const geminiBase = 'https://generativelanguage.googleapis.com/v1beta/models/';
-const geminiUrl = geminiBase + 'gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+
+          const geminiBase = 'https://generativelanguage.googleapis.com/v1beta/models/';
+          const geminiUrl = geminiBase + 'gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+
           const r = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3676,14 +3586,19 @@ const geminiUrl = geminiBase + 'gemini-2.5-flash:generateContent?key=' + encodeU
               generationConfig: { temperature: 0.35, maxOutputTokens: 1200 }
             })
           });
+
           const data = await r.json();
-          if (!r.ok) return send(res, r.status, { error: data && data.error && data.error.message ? data.error.message : 'Gemini API error' });
-          const c0 = data && data.candidates && data.candidates[0];
-          const p0 = c0 && c0.content && c0.content.parts && c0.content.parts[0];
-          const reply = (p0 && p0.text) ? p0.text : 'No analysis returned.';
-          return send(res, 200, { reply, model: 'gemini-2.5-flash' });
-} catch (err) {
-          return send(res, 500, { error: err.message || 'Internal AI Copilot failure' });
+          if (!r.ok) {
+            return send(res, r.status, {
+              error: (data && data.error && data.error.message) || 'Gemini API error'
+            });
+          }
+
+          const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+          const reply = parts.map(pt => pt.text || '').join('').trim() || 'No analysis returned.';
+          return send(res, 200, { reply, model: 'gemini-2.5-flash', timestamp: new Date().toISOString() });
+        } catch (err) {
+          return send(res, 500, { error: (err && err.message) || 'Internal AI Copilot failure' });
         }
       });
       return;
