@@ -3590,6 +3590,58 @@ http.createServer(async (req, res) => {
     if (STATIC[p]) {
       return send(res, 200, fs.readFileSync(path.join(__dirname, 'public', STATIC[p])), 'text/html; charset=utf-8');
     }
+        if (p === '/api/ai-copilot' && req.method === 'POST') {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) return send(res, 500, { error: 'GEMINI_API_KEY is not configured on Render.' });
+      let raw = '';
+      req.on('data', chunk => {
+        raw += chunk;
+        if (raw.length > 262144) req.destroy();
+      });
+      req.on('end', async () => {
+        try {
+          const { prompt, mode = 'chat', context = {}, history = [] } = JSON.parse(raw || '{}');
+          if (!prompt || typeof prompt !== 'string') return send(res, 400, { error: 'Prompt is required.' });
+          const systemInstruction = 'You are an institutional FX Macro & Derivatives Desk Analyst embedded inside FX Fundamentals Pro. Analyze the provided live macro JSON snapshot (Macro Scores, Economic Surprises, 2Y Rate Path, Regime Velocity, COT Squeeze Radar, Open Portfolio Exposure, Calendar, News). Be concise, quantitative, and actionable. Cite exact numbers from the snapshot. Format cleanly with short bullet points and bold key levels/pairs. Frame as institutional desk scenarios & risk checks.';
+          const contents = [];
+          if (Array.isArray(history)) {
+            history.slice(-6).forEach(m => {
+              if (m && m.role && m.text) {
+                contents.push({
+                  role: m.role === 'assistant' ? 'model' : 'user',
+                  parts: [{ text: String(m.text).slice(0, 3000) }]
+                });
+              }
+            });
+          }
+          contents.push({
+            role: 'user',
+            parts: [{ text: `MODE: ${String(mode).toUpperCase()}\nLIVE DESK SNAPSHOT:\n${JSON.stringify(context).slice(0, 18000)}\n\nREQUEST:\n${prompt}` }]
+          });
+                                       const geminibase = 'https://generativelanguage.googleapis.com'/v1beta/models/;
+          const geminiUrl = geminiBase + 'gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+          const r = await fetch(geminiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              systemInstruction: { parts: [{ text: systemInstruction }] },
+              contents,
+              generationConfig: { temperature: 0.35, maxOutputTokens: 1200 }
+            })
+          });
+          const data = await r.json();
+          if (!r.ok) return send(res, r.status, { error: data && data.error && data.error.message ? data.error.message : 'Gemini API error' });
+          const c0 = data && data.candidates && data.candidates[0];
+          const p0 = c0 && c0.content && c0.content.parts && c0.content.parts[0];
+          const reply = (p0 && p0.text) ? p0.text : 'No analysis returned.';
+          return send(res, 200, { reply, model: 'gemini-2.5-flash' });
+
+          return send(res, 500, { error: err.message || 'Internal AI Copilot failure' });
+        }
+      });
+      return;
+    }
+
     send(res, 404, { error: 'Not found' });
   } catch (e) {
     send(res, 502, { error: 'Upstream unavailable', detail: e.message });
