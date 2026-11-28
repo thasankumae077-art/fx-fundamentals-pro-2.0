@@ -3646,45 +3646,69 @@ http.createServer(async (req, res) => {
             }]
           });
 
-const models = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
-          const hostA = ['aiplatform', 'googleapis', 'com'].join('.');
-          const hostB = ['generativelanguage', 'googleapis', 'com'].join('.');
-          const bases = [
-            ['https:/', hostA, 'v1', 'publishers', 'google', 'models', ''].join('/'),
-            ['https:/', hostB, 'v1beta', 'models', ''].join('/')
+const trimmedKey = apiKey.trim();
+          const hostVertex = ['aiplatform', 'googleapis', 'com'].join('.');
+          const hostStudio = ['generativelanguage', 'googleapis', 'com'].join('.');
+          const vertexBase = ['https:/', hostVertex, 'v1', 'publishers', 'google', 'models', ''].join('/');
+          const studioBase = ['https:/', hostStudio, 'v1beta', 'models', ''].join('/');
+
+          // Pick the matching host first based on key type (AIza = AI Studio, AQ. = Vertex Express)
+          const bases = trimmedKey.startsWith('AIza')
+            ? [studioBase, vertexBase]
+            : [vertexBase, studioBase];
+
+          // Use minimal/zero thinking so desk replies return in ~1-3s instead of timing out
+          const attempts = [
+            { id: 'gemini-3-flash-preview', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
+            { id: 'gemini-2.5-flash', thinkingConfig: { thinkingBudget: 0 } }
           ];
-          const payload = JSON.stringify({
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents,
-            generationConfig: { temperature: 0.35, maxOutputTokens: 1200 }
-          });
 
           let lastError = 'Gemini API error';
           let lastStatus = 500;
 
           for (const base of bases) {
-            for (const modelId of models) {
-              const r = await fetch(base + modelId + ':generateContent', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'x-goog-api-key': apiKey.trim()
-                },
-                body: payload,
-                signal: AbortSignal.timeout(30000)
-              });
+            for (const m of attempts) {
+              try {
+                const payload = JSON.stringify({
+                  systemInstruction: { parts: [{ text: systemInstruction }] },
+                  contents,
+                  generationConfig: {
+                    temperature: 0.35,
+                    maxOutputTokens: 1200,
+                    thinkingConfig: m.thinkingConfig
+                  }
+                });
 
-              const data = await r.json().catch(() => ({}));
-              if (!r.ok) {
-                lastStatus = r.status;
-                lastError = (data && data.error && data.error.message) || ('API HTTP ' + r.status);
-                continue;
+                const r = await fetch(base + m.id + ':generateContent', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': trimmedKey
+                  },
+                  body: payload,
+                  signal: AbortSignal.timeout(25000)
+                });
+
+                const data = await r.json().catch(() => ({}));
+                if (!r.ok) {
+                  lastStatus = r.status;
+                  lastError = (data && data.error && data.error.message) || ('API HTTP ' + r.status);
+                  continue;
+                }
+
+                const c0 = Array.isArray(data && data.candidates) ? data.candidates[0] : null;
+                const parts = (c0 && c0.content && Array.isArray(c0.content.parts)) ? c0.content.parts : [];
+                const reply = parts
+                  .filter(pt => !pt.thought && pt.text)
+                  .map(pt => pt.text)
+                  .join('')
+                  .trim() || 'No analysis returned.';
+
+                return send(res, 200, { reply, model: m.id, timestamp: new Date().toISOString() });
+              } catch (fetchErr) {
+                lastStatus = 504;
+                lastError = (fetchErr && fetchErr.message) || 'Upstream timeout';
               }
-
-              const c0 = Array.isArray(data && data.candidates) ? data.candidates[0] : null;
-              const parts = (c0 && c0.content && Array.isArray(c0.content.parts)) ? c0.content.parts : [];
-              const reply = parts.map(pt => pt.text || '').join('').trim() || 'No analysis returned.';
-              return send(res, 200, { reply, model: modelId, timestamp: new Date().toISOString() });
             }
           }
 
