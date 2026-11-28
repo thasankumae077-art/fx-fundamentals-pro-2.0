@@ -3658,13 +3658,16 @@ const trimmedKey = apiKey.trim();
             : [vertexBase, studioBase];
 
           // Use minimal/zero thinking so desk replies return in ~1-3s instead of timing out
+                   // Current GA Flash models first; minimal/low thinking keeps replies fast (~1-3s)
           const attempts = [
-            { id: 'gemini-3-flash-preview', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
-            { id: 'gemini-2.5-flash', thinkingConfig: { thinkingBudget: 0 } }
+            { id: 'gemini-3.8-flash', thinkingConfig: { thinkingLevel: 'LOW' } },
+            { id: 'gemini-3.5-flash-lite', thinkingConfig: { thinkingLevel: 'MINIMAL' } },
+            { id: 'gemini-3-flash-preview', thinkingConfig: { thinkingLevel: 'MINIMAL' } }
           ];
 
           let lastError = 'Gemini API error';
           let lastStatus = 500;
+          const errLog = [];
 
           for (const base of bases) {
             for (const m of attempts) {
@@ -3692,7 +3695,9 @@ const trimmedKey = apiKey.trim();
                 const data = await r.json().catch(() => ({}));
                 if (!r.ok) {
                   lastStatus = r.status;
-                  lastError = (data && data.error && data.error.message) || ('API HTTP ' + r.status);
+                  const msg = (data && data.error && data.error.message) || ('API HTTP ' + r.status);
+                  errLog.push(`${m.id} (${r.status}): ${msg}`);
+                  lastError = msg;
                   continue;
                 }
 
@@ -3707,12 +3712,14 @@ const trimmedKey = apiKey.trim();
                 return send(res, 200, { reply, model: m.id, timestamp: new Date().toISOString() });
               } catch (fetchErr) {
                 lastStatus = 504;
-                lastError = (fetchErr && fetchErr.message) || 'Upstream timeout';
+                const msg = (fetchErr && fetchErr.message) || 'Upstream timeout';
+                errLog.push(`${m.id} (timeout): ${msg}`);
+                lastError = msg;
               }
             }
           }
 
-          return send(res, lastStatus, { error: lastError });
+          return send(res, lastStatus, { error: errLog[0] || lastError });
 
         } catch (err) {
           return send(res, 500, { error: (err && err.message) || 'Internal AI Copilot failure' });
