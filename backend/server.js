@@ -3635,7 +3635,7 @@ const geminiUrl = geminiBase + 'gemini-2.5-flash:generateContent?key=' + encodeU
           const p0 = c0 && c0.content && c0.content.parts && c0.content.parts[0];
           const reply = (p0 && p0.text) ? p0.text : 'No analysis returned.';
           return send(res, 200, { reply, model: 'gemini-2.5-flash' });
-
+} catch (err) {
           return send(res, 500, { error: err.message || 'Internal AI Copilot failure' });
         }
       });
