@@ -3518,20 +3518,92 @@ http.createServer(async (req, res) => {
   res.setHeader('Strict-Transport-Security', 'max-age=15552000');
   res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'unsafe-inline'");
   res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  if (o && ORIGINS.includes(o)) {
+
+  if (o && (ORIGINS.includes(o) || ORIGINS.includes('*'))) {
     res.setHeader('Access-Control-Allow-Origin', o);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-if (req.method !== 'GET' && !(req.method === 'POST' && req.url.startsWith('/api/ai-copilot'))) {
-  return send(res, 405, { error: 'Method not allowed' });
-}
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204);
+    return res.end();
+  }
+
+  if (req.method !== 'GET' && !(req.method === 'POST' && req.url.startsWith('/api/ai-copilot'))) {
+    return send(res, 405, { error: 'Method not allowed' });
+  }
 
   const U = new URL(req.url, 'http://x');
   const p = U.pathname;
   const force = U.searchParams.get('force') === '1';
+
   try {
-if (p === '/api/ai-copilot' && req.method === 'POST') {
+    if (p === '/api/health') {
+      return send(res, 200, { ok: true, status: 'online', timestamp: new Date().toISOString() });
+    }
+
+    if (p === '/api/history') {
+      return send(res, 200, await cached('h', 36e5, fetchEcbRaw, force));
+    }
+
+    if (p === '/api/rates') {
+      return send(res, 200, await buildRates(force));
+    }
+
+    if (p === '/api/fundamentals') {
+      return send(res, 200, await cached('f', 18e5, () => fundamentals(force), force));
+    }
+
+    if (p === '/api/dashboard') {
+      return send(res, 200, await cached('d', 3e5, () => dashboard(force), force));
+    }
+
+    if (p === '/api/assets') {
+      return send(res, 200, await cached('assets', 18e5, () => multiAssets(force), force));
+    }
+
+    if (p === '/api/cot') {
+      return send(res, 200, await cached('cot', 432e5, cot, force));
+    }
+
+    if (p === '/api/intelligence') {
+      return send(res, 200, await buildIntelligence(force));
+    }
+
+    if (p === '/api/calendar') {
+      const range = parseCalRange(U.searchParams.get('from'), U.searchParams.get('to'));
+      return send(res, 200, await cached(range.cacheKey, 900000, () => calendar(range), force));
+    }
+
+    if (p === '/api/news/stream') {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive'
+      });
+      res.write(`event: init\ndata: ${JSON.stringify(news.slice(0, 80).map(presentNews))}\n\n`);
+      sseClients.add(res);
+      req.on('close', () => sseClients.delete(res));
+      return;
+    }
+
+    if (p === '/api/news') {
+      if (!news.length) await firstPoll;
+      const cat = U.searchParams.get('category');
+      const cur = U.searchParams.get('currency');
+      let list = news;
+      if (cat && cat !== 'All') list = list.filter(n => n.category === cat);
+      if (cur && cur !== 'All') list = list.filter(n => n.cur?.includes(cur));
+      return send(res, 200, {
+        items: list.slice(0, 120).map(presentNews),
+        total: list.length,
+        lastPoll,
+        fetchedAt: new Date().toISOString()
+      });
+    }
+
+    if (p === '/api/ai-copilot' && req.method === 'POST') {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey) {
         return send(res, 500, { error: 'GEMINI_API_KEY is not configured on the server.' });
@@ -3574,37 +3646,43 @@ if (p === '/api/ai-copilot' && req.method === 'POST') {
             }]
           });
 
-          const geminiBase = 'https://generativelanguage.googleapis.com/v1beta/models/';
-          const geminiUrl = geminiBase + 'gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+          const models = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
+          let lastError = 'Gemini API error';
+          let lastStatus = 500;
 
-          const r = await fetch(geminiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              systemInstruction: { parts: [{ text: systemInstruction }] },
-              contents,
-              generationConfig: { temperature: 0.35, maxOutputTokens: 1200 }
-            })
-          });
-
-          const data = await r.json();
-          if (!r.ok) {
-            return send(res, r.status, {
-              error: (data && data.error && data.error.message) || 'Gemini API error'
+          for (const modelId of models) {
+            const geminiUrl = 'https://googleapis.com' + modelId + ':generateContent?key=' + encodeURIComponent(apiKey);
+            const r = await fetch(geminiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: systemInstruction }] },
+                contents,
+                generationConfig: { temperature: 0.35, maxOutputTokens: 1200 }
+              })
             });
+
+            const data = await r.json();
+            if (!r.ok) {
+              lastStatus = r.status;
+              lastError = (data && data.error && data.error.message) || 'Gemini API error';
+              if (r.status === 503 || r.status === 429) continue;
+              return send(res, r.status, { error: lastError });
+            }
+
+            const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+            const reply = parts.map(pt => pt.text || '').join('').trim() || 'No analysis returned.';
+            return send(res, 200, { reply, model: modelId, timestamp: new Date().toISOString() });
           }
 
-          const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-          const reply = parts.map(pt => pt.text || '').join('').trim() || 'No analysis returned.';
-          return send(res, 200, { reply, model: 'gemini-2.5-flash', timestamp: new Date().toISOString() });
+          return send(res, lastStatus, { error: lastError });
         } catch (err) {
           return send(res, 500, { error: (err && err.message) || 'Internal AI Copilot failure' });
         }
       });
       return;
     }
-  }
-  
+
     send(res, 404, { error: 'Not found' });
   } catch (e) {
     send(res, 502, { error: 'Upstream unavailable', detail: e.message });
