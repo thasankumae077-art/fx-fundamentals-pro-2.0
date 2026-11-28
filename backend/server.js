@@ -3603,8 +3603,8 @@ if (p === '/api/ai-copilot' && req.method === 'POST') {
       });
       return;
     }
-    
-
+  }
+  
     send(res, 404, { error: 'Not found' });
   } catch (e) {
     send(res, 502, { error: 'Upstream unavailable', detail: e.message });
