@@ -3543,26 +3543,33 @@ http.createServer(async (req, res) => {
       const userMsg = body.message || body.prompt || (body.messages && body.messages.length ? body.messages[body.messages.length - 1].content : '') || 'Summarize current FX macro regime.';
      const contextStr = body.context ? `\n\nLive Dashboard Context:\n${JSON.stringify(body.context).slice(0, 6000)}` : '';
 
-      const gRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [{
-                text: `You are an institutional FX Macro Desk Copilot. Be concise, data-driven, and actionable.\n\nUser Question: ${userMsg}${contextStr}`
-              }]
-            }],
-                    generationConfig: {
-           thinkingConfig: { thinkingLevel: 'low' },
-           maxOutputTokens: 500,
-           temperature: 0.3
-         } 
-          })
-        }
-      );
-      const gData = await gRes.json();
+              const models = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
+      let gRes, gData;
+      for (const m of models) {
+        gRes = await fetch(
+          'https://' + 'generativelanguage.' + '://googleapis.com' + m + ':generateContent?key=' + encodeURIComponent(apiKey),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{
+                parts: [{
+                  text: `You are an institutional FX Macro Desk Copilot. Be concise, data-driven, and actionable.\n\nUser Question: ${userMsg}${contextStr}
+                }]
+              }],
+              generationConfig: {
+                thinkingConfig: { thinkingLevel: 'low' },
+                maxOutputTokens: 1200,
+                temperature: 0.3
+              }
+            })
+          }
+        );
+        gData = await gRes.json();
+        if (gRes.ok || (gRes.status !== 503 && gRes.status !== 429)) break;
+      }
+
+      
       if (!gRes.ok) {
         return send(res, gRes.status, { error: gData?.error?.message || 'Gemini API error' });
       }
