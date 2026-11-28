@@ -3541,7 +3541,7 @@ http.createServer(async (req, res) => {
       if (!apiKey) return send(res, 500, { error: 'GEMINI_API_KEY not configured' });
 
       const userMsg = body.message || body.prompt || (body.messages && body.messages.length ? body.messages[body.messages.length - 1].content : '') || 'Summarize current FX macro regime.';
-     const contextStr = body.context ? `\n\nLive Dashboard Context:\n${JSON.stringify(body.context).slice(0, 12000)}` : '';
+     const contextStr = body.context ? `\n\nLive Dashboard Context:\n${JSON.stringify(body.context).slice(0, 6000)}` : '';
 
       const gRes = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
@@ -3553,7 +3553,12 @@ http.createServer(async (req, res) => {
               parts: [{
                 text: `You are an institutional FX Macro Desk Copilot. Be concise, data-driven, and actionable.\n\nUser Question: ${userMsg}${contextStr}`
               }]
-            }]
+            }],
+                    generationConfig: {
+           thinkingConfig: { thinkingLevel: 'low' },
+           maxOutputTokens: 500,
+           temperature: 0.3
+         } 
           })
         }
       );
