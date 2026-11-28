@@ -3618,8 +3618,8 @@ http.createServer(async (req, res) => {
             role: 'user',
             parts: [{ text: `MODE: ${String(mode).toUpperCase()}\nLIVE DESK SNAPSHOT:\n${JSON.stringify(context).slice(0, 18000)}\n\nREQUEST:\n${prompt}` }]
           });
-                                       const geminibase = 'https://generativelanguage.googleapis.com'/v1beta/models/;
-          const geminiUrl = geminiBase + 'gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
+                                       const geminiBase = 'https://generativelanguage.googleapis.com/v1beta/models/';
+const geminiUrl = geminiBase + 'gemini-2.5-flash:generateContent?key=' + encodeURIComponent(apiKey);
           const r = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
