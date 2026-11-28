@@ -3647,35 +3647,45 @@ http.createServer(async (req, res) => {
           });
 
           const models = ['gemini-3-flash-preview', 'gemini-2.5-flash'];
+          const endpoints = [
+            'https://googleapis.com',
+            'https://generativelanguage.googleapis.com/v1beta/models/'
+          ];
+          const payload = JSON.stringify({
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents,
+            generationConfig: { temperature: 0.35, maxOutputTokens: 1200 }
+          });
+
           let lastError = 'Gemini API error';
           let lastStatus = 500;
 
-          for (const modelId of models) {
-            const geminiUrl = 'https://googleapis.com' + modelId + ':generateContent?key=' + encodeURIComponent(apiKey);
-            const r = await fetch(geminiUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                systemInstruction: { parts: [{ text: systemInstruction }] },
-                contents,
-                generationConfig: { temperature: 0.35, maxOutputTokens: 1200 }
-              })
-            });
+          for (const base of endpoints) {
+            for (const modelId of models) {
+              const r = await fetch(base + modelId + ':generateContent', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-goog-api-key': apiKey
+                },
+                body: payload
+              });
 
-            const data = await r.json();
-            if (!r.ok) {
-              lastStatus = r.status;
-              lastError = (data && data.error && data.error.message) || 'Gemini API error';
-              if (r.status === 503 || r.status === 429) continue;
-              return send(res, r.status, { error: lastError });
+              const data = await r.json().catch(() => ({}));
+              if (!r.ok) {
+                lastStatus = r.status;
+                lastError = (data && data.error && data.error.message) || ('API HTTP ' + r.status);
+                continue;
+              }
+
+              const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
+              const reply = parts.map(pt => pt.text || '').join('').trim() || 'No analysis returned.';
+              return send(res, 200, { reply, model: modelId, timestamp: new Date().toISOString() });
             }
-
-            const parts = (data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts) || [];
-            const reply = parts.map(pt => pt.text || '').join('').trim() || 'No analysis returned.';
-            return send(res, 200, { reply, model: modelId, timestamp: new Date().toISOString() });
           }
 
           return send(res, lastStatus, { error: lastError });
+
         } catch (err) {
           return send(res, 500, { error: (err && err.message) || 'Internal AI Copilot failure' });
         }
