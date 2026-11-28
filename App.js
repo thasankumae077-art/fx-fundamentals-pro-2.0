@@ -2429,6 +2429,26 @@ async function callAiCopilot(payload) {
     timestamp: json?.timestamp || new Date().toISOString()
   };
 }
+function formatCopilotText(raw) {
+  if (!raw) return null;
+  return String(raw).split('\n').map((line, i) => {
+    const cleanLine = line
+      .replace(/^#{1,4}\s+/, '')
+      .replace(/^\s*[\*\-]\s+/, '• ');
+    const parts = cleanLine.split(/(\*\*[^*]+\*\*)/g);
+    return (
+      <T key={i} s={13} c={C.tx} style={{ lineHeight: 20, marginBottom: 4 }}>
+        {parts.map((part, j) =>
+          part.startsWith('**') && part.endsWith('**') ? (
+            <T key={j} s={13} w='800' c='#F8FAFC'>{part.slice(2, -2)}</T>
+          ) : (
+            part.replace(/\*/g, '')
+          )
+        )}
+      </T>
+    );
+  });
+}
 
 function AiDeskDrawer({ buildDeskSnapshot, wide }) {
   const [open, setOpen] = useState(false);
@@ -2589,7 +2609,12 @@ function AiDeskDrawer({ buildDeskSnapshot, wide }) {
                     <T s={10} w='800' c={isUser ? '#bfdbfe' : C.ac} style={{ marginBottom: 4 }}>
                       {isUser ? 'YOU' : 'AI DESK COPILOT'} · {fmtIstTime(m.ts)}
                     </T>
-                    <T s={13} c={C.tx} style={{ lineHeight: 20 }}>{m.content}</T>
+                    {isUser ? (
+  <T s={13} c={C.tx} style={{ lineHeight: 20 }}>{m.content}</T>
+) : (
+  <View>{formatCopilotText(m.content)}</View>
+)}
+
                   </View>
                 );
               })}
